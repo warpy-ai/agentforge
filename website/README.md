@@ -25,7 +25,18 @@ npm run build
 npm run preview
 ```
 
-`npm run build` writes the site to `dist/`.
+`npm run build` writes the site to `dist/`. The dev server and preview serve the page under the
+GitHub Pages base path: http://localhost:4321/agentforge/.
+
+## Deployment
+
+The site is published to GitHub Pages at https://warpy-ai.github.io/agentforge/ by
+[`.github/workflows/pages.yml`](../.github/workflows/pages.yml), which runs on every push to
+`main` that touches `website/` (or by hand from the Actions tab). The repository setting
+"Pages > Build and deployment > Source" must be "GitHub Actions".
+
+`astro.config.mjs` sets `site` and `base` for that URL. For a custom domain, set `site` to the
+new origin, remove `base`, and add a `CNAME` file to `public/`.
 
 ## Layout
 

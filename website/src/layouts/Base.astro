@@ -13,6 +13,10 @@ const {
   description =
     'AgentForge compiles the agent program and the model together against an explicit machine model, so KV-cache residency, prefetch, prefill/decode placement and kernels are planned from what the agent already knows. Open source, written in Rust.',
 } = Astro.props;
+
+// The site is served under a base path on GitHub Pages; public assets need it prefixed.
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const canonical = Astro.site ? new URL(`${base}/`, Astro.site).href : undefined;
 ---
 
 <!doctype html>
@@ -23,11 +27,13 @@ const {
     <title>{title}</title>
     <meta name="description" content={description} />
     <meta name="theme-color" content="#0c0b09" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} />
+    {canonical && <link rel="canonical" href={canonical} />}
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="AgentForge" />
+    {canonical && <meta property="og:url" content={canonical} />}
     <meta name="twitter:card" content="summary" />
     <meta name="generator" content={Astro.generator} />
   </head>
