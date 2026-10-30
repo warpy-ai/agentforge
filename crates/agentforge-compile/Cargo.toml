@@ -1,0 +1,13 @@
+[package]
+name = "agentforge-compile"
+description = "Compiler passes over agent programs and machine models: KV liveness, residency planning, placement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentforge-ir = { workspace = true }
+agentforge-machine = { workspace = true }
+agentforge-cost = { workspace = true }

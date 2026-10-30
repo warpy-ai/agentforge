@@ -1,0 +1,231 @@
+---
+import SectionHead from './SectionHead.astro';
+import Barcode from './Barcode.astro';
+import { links, machineExcerpt, machines } from '../data/content';
+---
+
+<section class="section" id="machines" aria-labelledby="machines-title">
+  <div class="wrap">
+    <SectionHead
+      index="05"
+      name="Machines"
+      id="machines-title"
+      title="Machines are data."
+      note="crates/agentforge-machine/machines/*.toml"
+    />
+
+    <p class="lede machines__intro">
+      A machine is a TOML file: devices with class, compute per precision, memory capacity and
+      bandwidth, on-chip SRAM; memory tiers with capacity, read and write bandwidth and latency; links.
+      Five ship with the baseline. Closed silicon is a modelling target through the same files.
+    </p>
+
+    <ul class="tickets">
+      {
+        machines.map((m, i) => (
+          <li class:list={['ticket', 'panel', m.tone === 'paper' && 'panel--paper']}>
+            <i class:list={['reg', m.tone === 'paper' && 'reg--paper']} aria-hidden="true" />
+            <div class="ticket__top">
+              <span class:list={['chip', m.tone === 'paper' ? 'chip--paper' : 'chip--accent']}>{m.class}</span>
+              <span class:list={['label', m.tone === 'paper' && 'label--onpaper']}>0{i + 1} / 05</span>
+            </div>
+            <h3 class="ticket__name display">{m.file}</h3>
+            <p class:list={['label', 'ticket__vendor', m.tone === 'paper' && 'label--onpaper']}>
+              {m.vendor} <span class="ticket__count">{m.count}</span>
+            </p>
+            <dl class="ticket__specs mono">
+              <div><dt>Memory</dt><dd>{m.memory}</dd></div>
+              <div><dt>Bandwidth</dt><dd>{m.bandwidth}</dd></div>
+              <div><dt>SRAM</dt><dd>{m.sram}</dd></div>
+              <div><dt>FP8</dt><dd>{m.fp8}</dd></div>
+              <div><dt>Link</dt><dd>{m.link}</dd></div>
+              <div><dt>Tiers</dt><dd>{m.tiers}</dd></div>
+            </dl>
+            <p class="ticket__note">{m.note}</p>
+            <div class="ticket__foot">
+              <Barcode width={110} height={24} />
+              <span class="mono ticket__file">{m.file}.toml</span>
+            </div>
+          </li>
+        ))
+      }
+    </ul>
+
+    <div class="excerpt">
+      <div class="excerpt__copy">
+        <p class="label label--accent">Excerpt</p>
+        <h3 class="h3 excerpt__title">h200.toml</h3>
+        <p class="body">
+          Vendor dense peaks, per-GPU host link share and one NVMe drive per GPU. The cost model reads
+          the same fields the simulator and the compiler read.
+        </p>
+        <a class="btn btn--ghost excerpt__link" href={links.machines}>All machine files <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="code excerpt__code"><pre><code>{machineExcerpt}</code></pre></div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .machines__intro {
+    margin-bottom: clamp(32px, 4vw, 56px);
+  }
+
+  .tickets {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .ticket {
+    display: flex;
+    flex-direction: column;
+    padding: 22px 20px 20px;
+  }
+
+  .ticket__top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 40px;
+  }
+
+  .ticket__name {
+    font-size: clamp(26px, 2.3vw, 34px);
+    letter-spacing: -0.02em;
+    text-transform: uppercase;
+    font-variation-settings: 'wdth' 80;
+    overflow-wrap: anywhere;
+  }
+
+  .ticket__vendor {
+    margin-top: 10px;
+    margin-bottom: 20px;
+    min-height: 2lh;
+  }
+
+  .ticket__count {
+    color: var(--accent);
+  }
+
+  .ticket__specs {
+    display: grid;
+    gap: 0;
+    font-size: 11.5px;
+    border-top: 1px solid var(--line-2);
+  }
+
+  .panel--paper .ticket__specs {
+    border-top-color: var(--on-paper);
+  }
+
+  .ticket__specs div {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 8px;
+    padding-block: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .panel--paper .ticket__specs div {
+    border-bottom-color: var(--paper-line);
+  }
+
+  .ticket__specs dt {
+    color: var(--mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 10px;
+    padding-top: 1px;
+  }
+
+  .panel--paper .ticket__specs dt {
+    color: var(--on-paper-2);
+  }
+
+  .ticket__specs dd {
+    color: var(--paper);
+    font-weight: 500;
+  }
+
+  .panel--paper .ticket__specs dd {
+    color: var(--on-paper);
+  }
+
+  .ticket__note {
+    margin-top: 16px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--paper-2);
+    flex: 1;
+  }
+
+  .panel--paper .ticket__note {
+    color: var(--on-paper-2);
+  }
+
+  .ticket__foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 12px;
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-2);
+  }
+
+  .panel--paper .ticket__foot {
+    border-top-color: var(--on-paper);
+  }
+
+  .ticket__file {
+    font-size: 11px;
+    color: var(--mute);
+  }
+
+  .panel--paper .ticket__file {
+    color: var(--on-paper-2);
+  }
+
+  .excerpt {
+    display: grid;
+    grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+    gap: 32px;
+    margin-top: clamp(32px, 4vw, 56px);
+    align-items: start;
+  }
+
+  .excerpt__title {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    margin-block: 8px 14px;
+  }
+
+  .excerpt__link {
+    margin-top: 24px;
+  }
+
+  @media (max-width: 1240px) {
+    .tickets {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 960px) {
+    .excerpt {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .tickets {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 520px) {
+    .tickets {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

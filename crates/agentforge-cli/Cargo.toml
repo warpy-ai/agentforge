@@ -1,0 +1,22 @@
+[package]
+name = "agentforge-cli"
+description = "Command-line interface for AgentForge research tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agentforge"
+path = "src/main.rs"
+
+[dependencies]
+agentforge-ir = { workspace = true }
+agentforge-machine = { workspace = true }
+agentforge-cost = { workspace = true }
+agentforge-compile = { workspace = true }
+agentforge-sim = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }

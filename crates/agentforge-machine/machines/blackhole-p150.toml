@@ -1,0 +1,41 @@
+name = "blackhole-p150"
+description = "Tenstorrent Blackhole p150 card: 140 Tensix cores with per-core SRAM, GDDR6, four 800G ports; the only fully open accelerator stack"
+sources = [
+    "https://tenstorrent.com/hardware/blackhole",
+    "https://docs.tenstorrent.com/getting-started/tt-software-stack.html",
+    "docs/research/notes/AI inference silicon landscape 2026/03-startup-silicon.md",
+]
+
+[[devices]]
+name = "blackhole-p150"
+class = "gpu"
+count = 1
+memory_gb = 32
+memory_bw_tbps = 0.512
+on_chip_sram_mb = 210
+tdp_w = 300
+notes = "Vendor figures: 774 TFLOPS FP8, 140 Tensix cores with 1.5 MB SRAM each, 32 GB GDDR6 at 512 GB/s. FP16 rate taken as half of FP8 (estimate)."
+
+[devices.compute_tflops]
+fp16 = 387
+bf16 = 387
+fp8 = 774
+
+[[tiers]]
+name = "host_dram"
+capacity_gb = 512
+read_bw_gbps = 50
+write_bw_gbps = 50
+latency_us = 20
+notes = "PCIe Gen5 x16 host link."
+
+[[links]]
+name = "qsfp-dd-800g"
+bw_gbps = 400
+latency_us = 5
+notes = "Four 800G ports, 400 GB/s aggregate."
+
+[[links]]
+name = "pcie5"
+bw_gbps = 50
+latency_us = 5

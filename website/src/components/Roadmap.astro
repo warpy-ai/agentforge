@@ -1,0 +1,104 @@
+---
+import SectionHead from './SectionHead.astro';
+import { links, roadmap } from '../data/content';
+---
+
+<section class="section" id="roadmap" aria-labelledby="roadmap-title">
+  <div class="wrap">
+    <SectionHead index="07" name="Roadmap" id="roadmap-title" title="M0 to M6." note="Source: docs/ROADMAP.md" />
+
+    <ol class="miles">
+      <li class="mile mile--head label" aria-hidden="true">
+        <span>Milestone</span>
+        <span>Scope</span>
+        <span>Done when</span>
+        <span>Status</span>
+      </li>
+      {
+        roadmap.map((m) => (
+          <li class="mile">
+            <div class="mile__id">
+              <span class="mile__code display">{m.id}</span>
+              <h3 class="h3 mile__title">{m.title}</h3>
+              <span class="label">{m.when}</span>
+            </div>
+            <p class="body mile__text">{m.scope}</p>
+            <p class="body mile__text">{m.done}</p>
+            <span class:list={['chip', m.status === 'current' ? 'chip--fill' : 'chip--mute', 'mile__status']}>
+              {m.status}
+            </span>
+          </li>
+        ))
+      }
+    </ol>
+
+    <a class="btn btn--ghost roadmap__link" href={links.roadmap}>Full roadmap <span aria-hidden="true">↗</span></a>
+  </div>
+</section>
+
+<style>
+  .miles {
+    border-top: 1px solid var(--line-2);
+  }
+
+  .mile {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1.2fr) minmax(0, 1fr) auto;
+    gap: 24px;
+    align-items: start;
+    padding-block: 24px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .mile--head {
+    padding-block: 12px;
+  }
+
+  .mile__id {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .mile__code {
+    font-size: 30px;
+    color: var(--accent);
+    line-height: 1;
+  }
+
+  .mile__title {
+    font-size: 18px;
+  }
+
+  .mile__text {
+    font-size: 14.5px;
+  }
+
+  .mile__status {
+    justify-self: end;
+  }
+
+  .roadmap__link {
+    margin-top: 28px;
+  }
+
+  @media (max-width: 960px) {
+    .mile--head {
+      display: none;
+    }
+
+    .mile {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px 16px;
+    }
+
+    .mile__status {
+      grid-row: 1;
+      grid-column: 2;
+    }
+
+    .mile__text {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

@@ -1,0 +1,12 @@
+[package]
+name = "agentforge-runtime"
+description = "Runtime traits for AgentForge: KV block stores, transports and executors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentforge-ir = { workspace = true }
+thiserror = { workspace = true }

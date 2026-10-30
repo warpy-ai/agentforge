@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "website",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Volumes/WD_2TB/warpy/agentforge/website && PATH=\"$HOME/.nvm/versions/node/v22.23.4/bin:$PATH\" exec npx astro dev --host 127.0.0.1 --port 4321"
+      ],
+      "port": 4321
+    }
+  ]
+}

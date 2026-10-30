@@ -1,0 +1,55 @@
+name = "b200"
+description = "NVIDIA HGX B200 node: eight Blackwell GPUs on NVLink 5, PCIe Gen5 host links, host DRAM and NVMe tiers"
+sources = [
+    "https://www.nvidia.com/en-us/data-center/hgx/",
+    "https://docs.nvidia.com/cuda/blackwell-tuning-guide/index.html",
+    "https://chipsandcheese.com/p/nvidias-b200-keeping-the-cuda-juggernaut",
+    "docs/research/notes/AI inference silicon landscape 2026/01-datacenter-gpus.md",
+]
+
+[[devices]]
+name = "b200-sxm"
+class = "gpu"
+count = 8
+memory_gb = 180
+memory_bw_tbps = 8.0
+on_chip_sram_mb = 164
+tdp_w = 1000
+notes = "Vendor dense peaks (HGX B200 table). 126 MB L2 plus 256 KB tensor memory per SM across 148 SMs. NVFP4 uses E4M3 scales per 16 elements; MX formats use E8M0 per 32."
+
+[devices.compute_tflops]
+tf32 = 1100
+fp16 = 2250
+bf16 = 2250
+fp8 = 4500
+int8 = 4500
+mxfp8 = 4500
+mxfp6 = 9000
+mxfp4 = 9000
+nvfp4 = 9000
+
+[[tiers]]
+name = "host_dram"
+capacity_gb = 2000
+read_bw_gbps = 50
+write_bw_gbps = 50
+latency_us = 20
+notes = "Per-GPU share of one PCIe Gen5 x16 link into 2 TB of host DRAM."
+
+[[tiers]]
+name = "nvme"
+capacity_gb = 30000
+read_bw_gbps = 7
+write_bw_gbps = 3
+latency_us = 100
+notes = "One PCIe Gen5 NVMe drive per GPU; arrays scale linearly."
+
+[[links]]
+name = "nvlink5"
+bw_gbps = 1800
+latency_us = 2
+
+[[links]]
+name = "pcie5"
+bw_gbps = 50
+latency_us = 5

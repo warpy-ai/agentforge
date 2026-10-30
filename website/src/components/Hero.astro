@@ -1,0 +1,233 @@
+---
+import Barcode from './Barcode.astro';
+import { heroStats, links } from '../data/content';
+---
+
+<section class="hero" id="top" aria-labelledby="hero-title">
+  <div class="wrap hero__grid">
+    <div class="hero__copy">
+      <p class="label label--accent hero__eyebrow">Doc 0001 / Project thesis / Accepted 2026-10-30</p>
+      <h1 class="display h1" id="hero-title">Compile the agent program and the model together.</h1>
+      <p class="lede">
+        AgentForge is an open-source compiler and runtime, written in Rust, for AI inference silicon.
+        It plans KV-cache residency, prefetch, prefill/decode placement and kernels from what the agent
+        already knows, instead of guessing one HTTP request at a time.
+      </p>
+      <div class="hero__actions">
+        <a class="btn btn--primary" href={links.designDoc}>Read the design doc</a>
+        <a class="btn btn--ghost" href={links.report}>Research report</a>
+      </div>
+      <ul class="hero__micro label" aria-label="Project facts">
+        <li><span class="label--ink">Simulator</span> working</li>
+        <li><span class="label--ink">Hardware backend</span> none yet</li>
+        <li><span class="label--ink">Crates</span> 7</li>
+        <li><span class="label--ink">Milestone</span> M0 of M6</li>
+      </ul>
+    </div>
+
+    <aside class="dossier panel panel--paper" aria-labelledby="dossier-title">
+      <i class="reg reg--paper" aria-hidden="true"></i>
+      <header class="dossier__head">
+        <div>
+          <p class="label label--onpaper">Workload reference</p>
+          <h2 class="dossier__title" id="dossier-title">Median coding-agent step</h2>
+        </div>
+        <p class="label label--onpaper dossier__src">TraceLab<br />06 / 2026</p>
+      </header>
+
+      <dl class="dossier__stats">
+        {
+          heroStats.map((s) => (
+            <div class="stat">
+              <dd class="stat__value">{s.value}</dd>
+              <dt class="label label--onpaper">{s.label}</dt>
+            </div>
+          ))
+        }
+      </dl>
+
+      <ul class="dossier__rows mono">
+        <li><span>Each cache miss</span><strong>seconds of recompute</strong></li>
+        <li><span>KV for the prefix</span><strong>≈38 GB FP16 · 19 GB FP8</strong></li>
+        <li><span>Tool wait after a step</span><strong>1 s to minutes</strong></li>
+      </ul>
+
+      <footer class="dossier__foot">
+        <Barcode width={150} height={30} color="#0c0b09" />
+        <span class="label label--onpaper">AF · 0001 / M0 / regime D</span>
+      </footer>
+    </aside>
+  </div>
+</section>
+<div class="ruler" aria-hidden="true"></div>
+
+<style>
+  .hero {
+    position: relative;
+    padding-block: clamp(56px, 9vw, 128px) clamp(48px, 7vw, 96px);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, var(--line-2) 1px, transparent 1.4px);
+    background-size: 28px 28px;
+    background-position: 14px 14px;
+    -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 30%, transparent 100%);
+    pointer-events: none;
+  }
+
+  .hero__grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 7fr) minmax(320px, 5fr);
+    gap: clamp(32px, 5vw, 80px);
+    align-items: start;
+  }
+
+  .hero__eyebrow {
+    margin-bottom: 28px;
+  }
+
+  .hero__copy .h1 {
+    margin-bottom: 32px;
+  }
+
+  .hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 40px;
+  }
+
+  .hero__micro {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 28px;
+    margin-top: 36px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
+
+  .hero__micro li {
+    display: inline-flex;
+    gap: 8px;
+  }
+
+  .hero__micro li::before {
+    content: '+';
+    color: var(--accent);
+  }
+
+  /* Dossier ticket */
+
+  .dossier {
+    padding: 28px;
+    margin-top: 10px;
+  }
+
+  .dossier__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--on-paper);
+  }
+
+  .dossier__title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 26px;
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    margin-top: 10px;
+    max-width: 12ch;
+  }
+
+  .dossier__src {
+    text-align: right;
+    flex: none;
+  }
+
+  .dossier__stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--paper-line);
+    border-bottom: 1px solid var(--on-paper);
+  }
+
+  .stat {
+    background: var(--paper);
+    padding: 20px 4px 18px 0;
+  }
+
+  .stat:nth-child(even) {
+    padding-left: 18px;
+  }
+
+  .stat__value {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(36px, 3.4vw, 48px);
+    line-height: 1;
+    letter-spacing: -0.03em;
+    margin-bottom: 10px;
+  }
+
+  .dossier__rows {
+    font-size: 12px;
+    padding-block: 14px;
+    border-bottom: 1px solid var(--on-paper);
+  }
+
+  .dossier__rows li {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding-block: 6px;
+    color: var(--on-paper-2);
+  }
+
+  .dossier__rows strong {
+    color: var(--on-paper);
+    font-weight: 700;
+    text-align: right;
+  }
+
+  .dossier__foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    padding-top: 20px;
+  }
+
+  @media (max-width: 960px) {
+    .hero__grid {
+      grid-template-columns: 1fr;
+    }
+
+    .dossier {
+      max-width: 560px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .dossier {
+      padding: 20px;
+    }
+
+    .dossier__stats {
+      grid-template-columns: 1fr;
+    }
+
+    .stat:nth-child(even) {
+      padding-left: 0;
+    }
+  }
+</style>

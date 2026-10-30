@@ -1,0 +1,17 @@
+[package]
+name = "agentforge-sim"
+description = "Discrete-event trace-replay simulator for agentic LLM serving over machine descriptions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentforge-ir = { workspace = true }
+agentforge-machine = { workspace = true }
+agentforge-cost = { workspace = true }
+agentforge-compile = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

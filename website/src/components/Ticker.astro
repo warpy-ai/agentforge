@@ -1,0 +1,73 @@
+---
+import { tickerItems } from '../data/content';
+const groups = [0, 1];
+---
+
+<div class="ticker" aria-hidden="true">
+  <div class="ticker__track">
+    {
+      groups.map(() => (
+        <div class="ticker__group">
+          {tickerItems.map((item) => (
+            <span class="ticker__item">
+              {item}
+              <i class="ticker__mark" />
+            </span>
+          ))}
+        </div>
+      ))
+    }
+  </div>
+</div>
+
+<style>
+  .ticker {
+    overflow: hidden;
+    background: var(--accent);
+    color: var(--on-accent);
+    border-block: 1px solid var(--accent-dim);
+  }
+
+  .ticker__track {
+    display: flex;
+    width: max-content;
+    animation: ticker 70s linear infinite;
+  }
+
+  .ticker__group {
+    display: flex;
+    padding-block: 11px;
+  }
+
+  .ticker__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 22px;
+    padding-inline: 11px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .ticker__mark {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: var(--on-accent);
+  }
+
+  @keyframes ticker {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ticker__track {
+      animation: none;
+    }
+  }
+</style>

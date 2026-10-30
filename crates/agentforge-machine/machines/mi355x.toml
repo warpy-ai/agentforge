@@ -1,0 +1,54 @@
+name = "mi355x"
+description = "AMD Instinct MI355X node: eight CDNA4 GPUs on Infinity Fabric, PCIe Gen5 host links, host DRAM and NVMe tiers"
+sources = [
+    "https://rocm.docs.amd.com/en/latest/reference/gpu-arch/mi350.html",
+    "https://chipsandcheese.com/p/amds-cdna-4-architecture-announcement",
+    "docs/research/notes/AI inference silicon landscape 2026/01-datacenter-gpus.md",
+]
+
+[[devices]]
+name = "mi355x"
+class = "gpu"
+count = 8
+memory_gb = 288
+memory_bw_tbps = 8.0
+on_chip_sram_mb = 296
+tdp_w = 1400
+notes = "Vendor dense peaks. 256 MB Infinity Cache plus 160 KB LDS per CU across 256 CUs. Block scaling is OCP MX only (E8M0 per 32); no native NVFP4, which falls back to the MXFP4 rate here."
+
+[devices.compute_tflops]
+tf32 = 1250
+fp16 = 2500
+bf16 = 2500
+fp8 = 5000
+int8 = 5000
+mxfp8 = 5000
+mxfp6 = 10000
+mxfp4 = 10000
+
+[[tiers]]
+name = "host_dram"
+capacity_gb = 2000
+read_bw_gbps = 50
+write_bw_gbps = 50
+latency_us = 20
+notes = "Per-GPU share of one PCIe Gen5 x16 link into 2 TB of host DRAM."
+
+[[tiers]]
+name = "nvme"
+capacity_gb = 30000
+read_bw_gbps = 7
+write_bw_gbps = 3
+latency_us = 100
+notes = "One PCIe Gen5 NVMe drive per GPU; arrays scale linearly."
+
+[[links]]
+name = "infinity-fabric"
+bw_gbps = 1000
+latency_us = 2
+notes = "Aggregate of seven Infinity Fabric links per GPU (vendor: above 1 TB/s)."
+
+[[links]]
+name = "pcie5"
+bw_gbps = 50
+latency_us = 5

@@ -1,0 +1,14 @@
+[package]
+name = "agentforge-machine"
+description = "Declarative machine descriptions for AI inference silicon (devices, memory tiers, links)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentforge-ir = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }

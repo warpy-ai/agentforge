@@ -1,0 +1,50 @@
+name = "h200"
+description = "NVIDIA H200 SXM node: eight GPUs on NVLink 4, PCIe Gen5 host links, host DRAM and NVMe tiers"
+sources = [
+    "https://www.nvidia.com/en-us/data-center/h200/",
+    "https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/",
+    "docs/research/notes/AI inference silicon landscape 2026/01-datacenter-gpus.md",
+]
+
+[[devices]]
+name = "h200-sxm"
+class = "gpu"
+count = 8
+memory_gb = 141
+memory_bw_tbps = 4.8
+on_chip_sram_mb = 50
+tdp_w = 700
+notes = "Vendor dense peaks. 50 MB L2 plus 228 KB shared memory per SM across 132 SMs. No FP4 tensor cores: FP4 weights run through the FP8 path."
+
+[devices.compute_tflops]
+tf32 = 495
+fp16 = 989
+bf16 = 989
+fp8 = 1979
+int8 = 1979
+
+[[tiers]]
+name = "host_dram"
+capacity_gb = 2000
+read_bw_gbps = 50
+write_bw_gbps = 50
+latency_us = 20
+notes = "Per-GPU share of one PCIe Gen5 x16 link (64 GB/s raw, about 50 effective) into 2 TB of host DRAM."
+
+[[tiers]]
+name = "nvme"
+capacity_gb = 30000
+read_bw_gbps = 7
+write_bw_gbps = 3
+latency_us = 100
+notes = "One PCIe Gen5 NVMe drive per GPU; arrays scale linearly."
+
+[[links]]
+name = "nvlink4"
+bw_gbps = 900
+latency_us = 2
+
+[[links]]
+name = "pcie5"
+bw_gbps = 50
+latency_us = 5

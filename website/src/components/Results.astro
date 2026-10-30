@@ -1,0 +1,533 @@
+---
+import SectionHead from './SectionHead.astro';
+import { results } from '../data/content';
+
+const fmt = (v: number, d: number) => v.toFixed(d);
+const rows = results.rows.map((r) => {
+  const planPct = (r.plan / r.lru) * 100;
+  const delta = Math.round(((r.plan - r.lru) / r.lru) * 100);
+  return { ...r, planPct, delta };
+});
+const arith = results.arithmetic;
+const pct = (s: number) => (s / arith.maxSeconds) * 100;
+---
+
+<section class="section" id="results" aria-labelledby="results-title">
+  <div class="wrap">
+    <SectionHead
+      index="04"
+      name="Results"
+      id="results-title"
+      title="First simulation results."
+      note="M0 · synthetic traces · source: design doc, first simulation results"
+    />
+
+    <div class="results__grid">
+      <div class="setup panel">
+        <i class="reg" aria-hidden="true"></i>
+        <p class="label label--accent setup__head">Setup · regime D</p>
+        <dl class="setup__list">
+          {
+            results.setup.map(([k, v]) => (
+              <div class="setup__row">
+                <dt class="label">{k}</dt>
+                <dd class="mono">{v}</dd>
+              </div>
+            ))
+          }
+        </dl>
+        <p class="body setup__note">
+          The <span class="mono">plan</span> policy uses the per-tool latency model from the Agent Program
+          IR: it keeps KV across short waits, spills it during long waits and prefetches before the
+          predicted return. <span class="mono">lru</span> keeps everything on the device until pressure
+          forces an eviction whose write lands on the arriving session's critical path.
+        </p>
+      </div>
+
+      <figure class="chart panel" aria-labelledby="chart-title" aria-describedby="chart-desc">
+        <i class="reg" aria-hidden="true"></i>
+        <figcaption class="chart__head">
+          <div>
+            <p class="label label--accent">Figure 1</p>
+            <h3 class="h3" id="chart-title">LRU baseline against the program-aware plan</h3>
+            <p class="label chart__sub" id="chart-desc">Each metric indexed to its LRU value. Lower is better.</p>
+          </div>
+          <ul class="legend" aria-label="Series">
+            <li><i class="swatch swatch--base" aria-hidden="true"></i>lru</li>
+            <li><i class="swatch swatch--plan" aria-hidden="true"></i>plan</li>
+          </ul>
+        </figcaption>
+
+        <div class="cmp-list">
+          {
+            rows.map((r) => (
+              <div class="cmp">
+                <div class="cmp__name">
+                  <span class="cmp__metric">{r.metric}</span>
+                  {r.unit && <span class="label">{r.unit}</span>}
+                </div>
+                <div class="cmp__bars">
+                  <div class="bar" title={`lru: ${fmt(r.lru, r.fmt)} ${r.unit}`.trim()}>
+                    <i class="bar__fill bar__fill--base" style={`width: 100%`} aria-hidden="true" />
+                    <span class="bar__val mono">{fmt(r.lru, r.fmt)}</span>
+                  </div>
+                  <div class="bar" title={`plan: ${fmt(r.plan, r.fmt)} ${r.unit}`.trim()}>
+                    <i class="bar__fill bar__fill--plan" style={`width: ${r.planPct.toFixed(1)}%`} aria-hidden="true" />
+                    <span class="bar__val mono">{fmt(r.plan, r.fmt)}</span>
+                  </div>
+                </div>
+                <span class="cmp__delta mono">{r.delta > 0 ? '+' : r.delta < 0 ? '−' : '±'}{Math.abs(r.delta)}%</span>
+              </div>
+            ))
+          }
+        </div>
+
+        <p class="label chart__foot">{results.seeds}</p>
+
+        <details class="tableview">
+          <summary class="label label--ink">Table view · full regime D report</summary>
+          <table class="mono">
+            <thead>
+              <tr><th scope="col">Metric</th><th scope="col">lru</th><th scope="col">plan</th></tr>
+            </thead>
+            <tbody>
+              {
+                results.table.map(([m, a, b]) => (
+                  <tr><th scope="row">{m}</th><td>{a}</td><td>{b}</td></tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </details>
+      </figure>
+    </div>
+
+    <ul class="readings">
+      {
+        results.readings.map((r, i) => (
+          <li class="reading">
+            <p class="label label--accent"><span class="mono">0{i + 1}</span> {r.tag}</p>
+            <p class="body reading__body">{r.body}</p>
+          </li>
+        ))
+      }
+    </ul>
+
+    <figure class="arith panel" aria-labelledby="arith-title">
+      <i class="reg" aria-hidden="true"></i>
+      <figcaption class="chart__head">
+        <div>
+          <p class="label label--accent">Figure 2</p>
+          <h3 class="h3" id="arith-title">Why a miss matters: first-order arithmetic</h3>
+          <p class="label chart__sub">70B grouped-query model, 119k-token prefix, FP16 KV ≈ 38 GB. Seconds, one axis.</p>
+        </div>
+      </figcaption>
+      <div class="arith__rows">
+        {
+          arith.rows.map((r) => (
+            <div class="arow" title={`${r.label}: ${r.text}`}>
+              <div class="arow__label">
+                <span class="arow__name">{r.label}</span>
+                <span class="label">{r.detail}</span>
+              </div>
+              <div class="arow__track">
+                <i
+                  class:list={['arow__fill', r.emphasis ? 'arow__fill--plan' : 'arow__fill--base']}
+                  style={`left: ${pct(r.from).toFixed(2)}%; width: ${Math.max(pct(r.to - r.from), 0.5).toFixed(2)}%`}
+                  aria-hidden="true"
+                />
+                <span class="arow__val mono" style={`left: ${pct(r.to).toFixed(2)}%`}>{r.text}</span>
+              </div>
+            </div>
+          ))
+        }
+        <div class="arow arow--axis" aria-hidden="true">
+          <div class="arow__label"></div>
+          <div class="axis mono">
+            <span style="left: 0%">0</span>
+            <span style="left: 33.33%">10</span>
+            <span style="left: 66.66%">20</span>
+            <span style="left: 100%">30 s</span>
+          </div>
+        </div>
+      </div>
+      <p class="label chart__foot">
+        With a 4 to 5 percent miss rate, misses dominate tail latency. Moving KV between tiers costs
+        tenths of a second to seconds; recomputing it costs 6 to 30 s depending on GPU and precision.
+      </p>
+    </figure>
+  </div>
+</section>
+
+<style>
+  .results__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 16px;
+    align-items: stretch;
+  }
+
+  .setup,
+  .chart,
+  .arith {
+    padding: 28px;
+  }
+
+  .setup__head {
+    margin-bottom: 20px;
+  }
+
+  .setup__list {
+    display: grid;
+    gap: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .setup__row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 16px;
+    padding-block: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .setup__row dd {
+    font-size: 12.5px;
+    color: var(--paper);
+  }
+
+  .setup__note {
+    margin-top: 20px;
+    font-size: 14.5px;
+  }
+
+  .setup__note .mono {
+    color: var(--paper);
+    font-size: 13px;
+  }
+
+  .chart__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 28px;
+  }
+
+  .chart__head .h3 {
+    margin-top: 8px;
+    max-width: 24ch;
+  }
+
+  .chart__sub {
+    margin-top: 10px;
+    text-transform: none;
+    letter-spacing: 0.04em;
+  }
+
+  .legend {
+    display: flex;
+    gap: 18px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--paper-2);
+    flex: none;
+  }
+
+  .legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .swatch {
+    width: 12px;
+    height: 12px;
+    display: inline-block;
+  }
+
+  .swatch--base {
+    background: var(--chart-base);
+  }
+
+  .swatch--plan {
+    background: var(--accent);
+  }
+
+  .cmp-list {
+    display: grid;
+    gap: 18px;
+  }
+
+  .cmp {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr) 58px;
+    gap: 16px;
+    align-items: center;
+  }
+
+  .cmp__name {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .cmp__metric {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--paper);
+  }
+
+  .cmp__bars {
+    display: grid;
+    gap: 2px;
+    padding-right: 60px;
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 14px;
+  }
+
+  .bar__fill {
+    display: block;
+    height: 14px;
+    border-radius: 0 4px 4px 0;
+    flex: none;
+  }
+
+  .bar__fill--base {
+    background: var(--chart-base);
+  }
+
+  .bar__fill--plan {
+    background: var(--accent);
+  }
+
+  .bar__val {
+    font-size: 12px;
+    color: var(--paper-2);
+    white-space: nowrap;
+  }
+
+  .cmp__delta {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--paper);
+    text-align: right;
+  }
+
+  .chart__foot {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    text-transform: none;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+    max-width: 70ch;
+  }
+
+  .tableview {
+    margin-top: 16px;
+  }
+
+  .tableview summary {
+    cursor: pointer;
+    list-style: none;
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .tableview summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .tableview summary::before {
+    content: '+';
+    color: var(--accent);
+  }
+
+  .tableview[open] summary::before {
+    content: '−';
+  }
+
+  .tableview table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 12px;
+  }
+
+  .tableview th,
+  .tableview td {
+    text-align: right;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    font-weight: 500;
+  }
+
+  .tableview th[scope='row'],
+  .tableview th:first-child {
+    text-align: left;
+    color: var(--paper-2);
+  }
+
+  .tableview thead th {
+    color: var(--mute);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .readings {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  .reading {
+    padding: 24px 0 8px;
+    border-top: 2px solid var(--line-2);
+  }
+
+  .reading__body {
+    margin-top: 14px;
+    font-size: 15.5px;
+  }
+
+  .arith {
+    margin-top: 16px;
+  }
+
+  .arith__rows {
+    display: grid;
+    gap: 14px;
+  }
+
+  .arow {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 24px;
+    align-items: center;
+  }
+
+  .arow__label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .arow__name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--paper);
+  }
+
+  .arow__track {
+    position: relative;
+    height: 14px;
+    margin-right: 72px;
+    border-left: 1px solid var(--line-2);
+  }
+
+  .arow__fill {
+    position: absolute;
+    top: 0;
+    height: 14px;
+    border-radius: 0 4px 4px 0;
+    min-width: 2px;
+  }
+
+  .arow__fill--base {
+    background: var(--chart-base);
+  }
+
+  .arow__fill--plan {
+    background: var(--accent);
+  }
+
+  .arow__val {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 10px;
+    font-size: 12px;
+    color: var(--paper-2);
+    white-space: nowrap;
+  }
+
+  .arow--axis {
+    margin-top: 4px;
+  }
+
+  .axis {
+    position: relative;
+    height: 18px;
+    margin-right: 72px;
+    border-top: 1px solid var(--line-2);
+    font-size: 11px;
+    color: var(--mute);
+  }
+
+  .axis span {
+    position: absolute;
+    top: 4px;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+
+  .axis span:first-child {
+    transform: none;
+  }
+
+  .axis span:last-child {
+    transform: translateX(-100%);
+  }
+
+  @media (max-width: 1100px) {
+    .results__grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 960px) {
+    .readings {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .setup,
+    .chart,
+    .arith {
+      padding: 20px;
+    }
+
+    .chart__head {
+      flex-direction: column;
+    }
+
+    .cmp {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    .cmp__delta {
+      text-align: left;
+    }
+
+    .arow {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    .arow__track,
+    .axis {
+      margin-right: 64px;
+    }
+  }
+</style>

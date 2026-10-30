@@ -1,0 +1,13 @@
+[package]
+name = "agentforge-cost"
+description = "Analytical (roofline-style) cost model for prefill, decode and KV transfers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentforge-ir = { workspace = true }
+agentforge-machine = { workspace = true }
+thiserror = { workspace = true }

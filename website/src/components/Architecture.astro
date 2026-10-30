@@ -1,0 +1,132 @@
+---
+import SectionHead from './SectionHead.astro';
+import { crates, layers, type LayerStatus } from '../data/content';
+
+const statusLabel: Record<LayerStatus, string> = {
+  baseline: 'Baseline',
+  skeleton: 'Skeleton',
+  traits: 'Traits',
+  planned: 'Planned',
+};
+
+const statusClass: Record<LayerStatus, string> = {
+  baseline: 'chip--fill',
+  skeleton: 'chip--accent',
+  traits: 'chip--accent',
+  planned: 'chip--mute',
+};
+---
+
+<section class="section" id="architecture" aria-labelledby="architecture-title">
+  <div class="wrap">
+    <SectionHead
+      index="03"
+      name="Architecture"
+      id="architecture-title"
+      title="Eight layers, top to bottom."
+      note="Source: design doc §3"
+    />
+
+    <ol class="stack">
+      {
+        layers.map((layer) => (
+          <li class="layer">
+            <span class="layer__id mono">{layer.id}</span>
+            <div class="layer__name">
+              <h3 class="h3">{layer.name}</h3>
+              <p class="label layer__crate">{layer.crate}</p>
+            </div>
+            <p class="body layer__role">{layer.role}</p>
+            <span class:list={['chip', statusClass[layer.status], 'layer__status']}>{statusLabel[layer.status]}</span>
+          </li>
+        ))
+      }
+    </ol>
+
+    <div class="crates">
+      <p class="label">Workspace crates</p>
+      <ul class="crates__list">
+        {crates.map((c) => <li class="chip">{c}</li>)}
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  .stack {
+    border-top: 1px solid var(--line-2);
+  }
+
+  .layer {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1.1fr) minmax(0, 2fr) auto;
+    gap: 24px;
+    align-items: start;
+    padding-block: 24px;
+    border-bottom: 1px solid var(--line);
+    transition: background-color 0.15s ease;
+  }
+
+  .layer:hover {
+    background: color-mix(in srgb, var(--bg-1) 70%, transparent);
+  }
+
+  .layer__id {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    padding-top: 4px;
+  }
+
+  .layer__crate {
+    margin-top: 8px;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    font-size: 12px;
+  }
+
+  .layer__role {
+    font-size: 15.5px;
+    max-width: 64ch;
+  }
+
+  .layer__status {
+    justify-self: end;
+  }
+
+  .crates {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 28px;
+  }
+
+  .crates__list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (max-width: 960px) {
+    .layer {
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+    }
+
+    .layer__role {
+      grid-column: 2 / 3;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .layer {
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: 12px 16px;
+    }
+
+    .layer__status {
+      grid-column: 2;
+      justify-self: start;
+    }
+  }
+</style>

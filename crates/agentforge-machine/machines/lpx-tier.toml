@@ -1,0 +1,35 @@
+name = "lpx-tier"
+description = "Illustrative SRAM decode tier shaped like the NVIDIA Groq 3 LPX rack: 256 LPUs with 500 MB SRAM each, backed by a DDR5 pool. Modelling target only; the hardware is closed."
+sources = [
+    "https://www.nvidia.com/en-us/data-center/lpx/",
+    "https://developer.nvidia.com/blog/inside-nvidia-groq-3-lpx-the-low-latency-inference-accelerator-for-the-nvidia-vera-rubin-platform",
+    "docs/research/notes/AI inference silicon landscape 2026/01-datacenter-gpus.md",
+]
+
+[[devices]]
+name = "lpu"
+class = "sram_lpu"
+count = 256
+memory_gb = 0.5
+memory_bw_tbps = 150
+on_chip_sram_mb = 500
+on_chip_sram_bw_tbps = 150
+notes = "Vendor rack figures divided by 256: 128 GB SRAM per rack, 40 PB/s SRAM bandwidth, about 315 PF FP8. The 'memory' of an LPU is its SRAM."
+
+[devices.compute_tflops]
+fp8 = 1230
+fp16 = 615
+
+[[tiers]]
+name = "ddr5_pool"
+capacity_gb = 12000
+read_bw_gbps = 100
+write_bw_gbps = 100
+latency_us = 10
+notes = "12 TB of DDR5 per rack reached over the rack fabric; per-LPU bandwidth is an estimate."
+
+[[links]]
+name = "rack-fabric"
+bw_gbps = 2500
+latency_us = 2
+notes = "640 TB/s scale-up per rack divided by 256 (vendor figure)."

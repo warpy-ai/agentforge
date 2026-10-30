@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/agentforge-ir",
+    "crates/agentforge-machine",
+    "crates/agentforge-cost",
+    "crates/agentforge-compile",
+    "crates/agentforge-sim",
+    "crates/agentforge-runtime",
+    "crates/agentforge-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.90"
+authors = ["AgentForge contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+agentforge-ir = { path = "crates/agentforge-ir", version = "0.1.0" }
+agentforge-machine = { path = "crates/agentforge-machine", version = "0.1.0" }
+agentforge-cost = { path = "crates/agentforge-cost", version = "0.1.0" }
+agentforge-compile = { path = "crates/agentforge-compile", version = "0.1.0" }
+agentforge-sim = { path = "crates/agentforge-sim", version = "0.1.0" }
+agentforge-runtime = { path = "crates/agentforge-runtime", version = "0.1.0" }
+
+[profile.release]
+debug = 1

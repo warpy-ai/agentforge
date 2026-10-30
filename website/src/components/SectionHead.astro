@@ -1,0 +1,58 @@
+---
+interface Props {
+  index: string;
+  name: string;
+  title: string;
+  note?: string;
+  id?: string;
+}
+const { index, name, title, note, id } = Astro.props;
+---
+
+<div class="section-head">
+  <div>
+    <p class="label label--ink section-head__idx"><span class="label--accent">{index}</span> / {name}</p>
+    <h2 class="display h2" id={id}>{title}</h2>
+  </div>
+  {note && <p class="label section-head__note">{note}</p>}
+</div>
+
+<style>
+  .section-head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px 40px;
+    align-items: end;
+    margin-bottom: clamp(28px, 4vw, 56px);
+  }
+
+  .section-head__idx {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+
+  .section-head__idx::before {
+    content: '';
+    width: 28px;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .section-head__note {
+    text-align: right;
+    max-width: 36ch;
+  }
+
+  @media (max-width: 640px) {
+    .section-head {
+      grid-template-columns: 1fr;
+      align-items: start;
+    }
+
+    .section-head__note {
+      text-align: left;
+    }
+  }
+</style>

@@ -1,0 +1,180 @@
+---
+import SectionHead from './SectionHead.astro';
+
+const inputs = [
+  {
+    key: 'Input A',
+    name: 'Agent Program IR',
+    items: ['Which prompt blocks are stable', 'When the session comes back', 'What it will append', 'Which branches are likely'],
+  },
+  {
+    key: 'Input B',
+    name: 'Machine model',
+    items: ['Where bytes can live', 'How fast they move', 'What each device class computes per precision', 'Which tiers and links exist'],
+  },
+];
+
+const outputs = ['KV residency', 'Prefetch', 'Prefill / decode placement', 'Kernels'];
+---
+
+<section class="section" id="thesis" aria-labelledby="thesis-title">
+  <div class="wrap">
+    <SectionHead index="02" name="Thesis" id="thesis-title" title="Two inputs. One plan." note="Source: design doc §2" />
+
+    <div class="flow" role="group" aria-label="How the compiler combines its inputs">
+      <div class="flow__inputs">
+        {
+          inputs.map((input) => (
+            <div class="node panel">
+              <i class="reg" aria-hidden="true" />
+              <p class="label label--accent">{input.key}</p>
+              <h3 class="h3 node__name">{input.name}</h3>
+              <ul class="node__list mono">
+                {input.items.map((item) => (
+                  <li>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+
+      <div class="flow__arrow" aria-hidden="true"><span>→</span></div>
+
+      <div class="node node--compiler panel">
+        <i class="reg reg--accent" aria-hidden="true"></i>
+        <p class="label label--accent">agentforge-compile</p>
+        <h3 class="node__big display">Compiler</h3>
+        <p class="body node__note">
+          Liveness, residency, placement and kernel selection decided before the first token is served.
+        </p>
+      </div>
+
+      <div class="flow__arrow" aria-hidden="true"><span>→</span></div>
+
+      <div class="node node--out panel panel--paper">
+        <i class="reg reg--paper" aria-hidden="true"></i>
+        <p class="label label--onpaper">Output</p>
+        <ul class="out__list">
+          {outputs.map((o, i) => <li><span class="mono out__idx">0{i + 1}</span>{o}</li>)}
+        </ul>
+      </div>
+    </div>
+
+    <p class="lede thesis__analogy">
+      KV block liveness is derived from the agent program the way register liveness is derived from a
+      control-flow graph. The same machine files drive the cost model, the simulator and the compiler, so
+      every policy is testable before silicon.
+    </p>
+  </div>
+</section>
+
+<style>
+  .flow {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 16px;
+    align-items: stretch;
+  }
+
+  .flow__inputs {
+    display: grid;
+    gap: 16px;
+  }
+
+  .node {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .node__name {
+    margin-top: 10px;
+    margin-bottom: 16px;
+  }
+
+  .node__list {
+    font-size: 12.5px;
+    color: var(--paper-2);
+    display: grid;
+    gap: 6px;
+  }
+
+  .node__list li {
+    display: flex;
+    gap: 10px;
+  }
+
+  .node__list li::before {
+    content: '▸';
+    color: var(--accent);
+  }
+
+  .node--compiler {
+    justify-content: center;
+    border-color: var(--accent);
+  }
+
+  .node__big {
+    font-size: clamp(34px, 3.4vw, 48px);
+    margin-block: 14px 16px;
+  }
+
+  .node__note {
+    font-size: 15px;
+  }
+
+  .flow__arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 28px;
+    padding-inline: 4px;
+  }
+
+  .out__list {
+    display: grid;
+    flex: 1;
+    grid-auto-rows: 1fr;
+    margin-top: 12px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 20px;
+    line-height: 1.1;
+  }
+
+  .out__list li {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-block: 12px;
+    border-top: 1px solid var(--on-paper);
+  }
+
+  .out__list li:first-child {
+    border-top: 0;
+  }
+
+  .out__idx {
+    font-size: 11px;
+    color: var(--on-paper-2);
+  }
+
+  .thesis__analogy {
+    margin-top: clamp(32px, 4vw, 56px);
+    max-width: 70ch;
+  }
+
+  @media (max-width: 960px) {
+    .flow {
+      grid-template-columns: 1fr;
+    }
+
+    .flow__arrow span {
+      display: inline-block;
+      transform: rotate(90deg);
+    }
+  }
+</style>

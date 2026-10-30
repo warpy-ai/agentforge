@@ -1,0 +1,86 @@
+---
+import SectionHead from './SectionHead.astro';
+import { problems } from '../data/content';
+---
+
+<section class="section" id="problem" aria-labelledby="problem-title">
+  <div class="wrap">
+    <SectionHead
+      index="01"
+      name="Problem"
+      id="problem-title"
+      title="The serving layer guesses what the agent already knows."
+      note="Source: design doc §1, research report"
+    />
+    <p class="lede problem__intro">
+      Today's compilers stop at the kernel or at one model iteration. The KV cache, batching,
+      prefill/decode placement and prefix reuse belong to a serving scheduler, in Python, over
+      hand-written per-vendor kernels. Agentic workloads make that split expensive.
+    </p>
+
+    <ol class="cards">
+      {
+        problems.map((p) => (
+          <li class="card panel">
+            <i class="reg" aria-hidden="true" />
+            <div class="card__top">
+              <span class="label label--accent">{p.index}</span>
+              <span class="chip chip--mute">{p.tag}</span>
+            </div>
+            <h3 class="h3 card__title">{p.title}</h3>
+            <p class="body card__body">{p.body}</p>
+            <p class="label card__source">{p.source}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  .problem__intro {
+    margin-bottom: clamp(32px, 4vw, 56px);
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    padding: 28px 28px 24px;
+    min-height: 100%;
+  }
+
+  .card__top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 36px;
+  }
+
+  .card__title {
+    margin-bottom: 14px;
+    max-width: 18ch;
+  }
+
+  .card__body {
+    font-size: 15.5px;
+    flex: 1;
+  }
+
+  .card__source {
+    margin-top: 28px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+
+  @media (max-width: 960px) {
+    .cards {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

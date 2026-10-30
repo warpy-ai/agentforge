@@ -1,0 +1,83 @@
+---
+import SectionHead from './SectionHead.astro';
+import { links, quickstart } from '../data/content';
+---
+
+<section class="section" id="quickstart" aria-labelledby="quickstart-title">
+  <div class="wrap quick">
+    <div>
+      <SectionHead index="06" name="Quickstart" id="quickstart-title" title="Build it. Run the simulator." />
+      <p class="body quick__copy">
+        Rust 1.90 is pinned in <span class="mono">rust-toolchain.toml</span>; rustup installs it on the
+        first build. The CLI lists machines and model presets, costs prefill and decode, runs the planning
+        passes, and replays synthetic or recorded traces under both residency policies.
+      </p>
+      <div class="quick__actions">
+        <a class="btn btn--primary" href={links.repo}>Clone the repository</a>
+        <a class="btn btn--ghost" href={links.contributing}>Contributing</a>
+      </div>
+    </div>
+
+    <div class="term code">
+      <div class="term__bar label">
+        <span><i class="dot" aria-hidden="true"></i> zsh · agentforge</span>
+        <span>cargo 1.90</span>
+      </div>
+      <pre><code>{quickstart.map((q) => (<><span class="cmt"># {q.comment}</span>{'\n'}<span class="p">$ </span><span class="k">{q.cmd}</span>{'\n\n'}</>))}</code></pre>
+    </div>
+  </div>
+</section>
+
+<style>
+  .quick {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: clamp(32px, 4vw, 64px);
+    align-items: start;
+  }
+
+  .quick__copy {
+    max-width: 50ch;
+  }
+
+  .quick__copy .mono {
+    color: var(--paper);
+    font-size: 14px;
+  }
+
+  .quick__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 32px;
+  }
+
+  .term {
+    padding: 0;
+  }
+
+  .term__bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .term__bar span {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .term pre {
+    padding: 20px;
+    white-space: pre;
+  }
+
+  @media (max-width: 960px) {
+    .quick {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

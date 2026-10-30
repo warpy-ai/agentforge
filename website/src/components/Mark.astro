@@ -1,0 +1,34 @@
+---
+// The stripe mark: the letters A and F built from five horizontal stripes.
+interface Props {
+  size?: number;
+  color?: string;
+  class?: string;
+}
+const { size = 32, color = 'currentColor', class: className } = Astro.props;
+const width = Math.round((size * 58) / 51);
+---
+
+<svg
+  class={className}
+  width={width}
+  height={size}
+  viewBox="0 0 58 51"
+  fill={color}
+  aria-hidden="true"
+  focusable="false"
+>
+  <rect x="0" y="0" width="24" height="7"></rect>
+  <rect x="0" y="11" width="7" height="7"></rect>
+  <rect x="17" y="11" width="7" height="7"></rect>
+  <rect x="0" y="22" width="24" height="7"></rect>
+  <rect x="0" y="33" width="7" height="7"></rect>
+  <rect x="17" y="33" width="7" height="7"></rect>
+  <rect x="0" y="44" width="7" height="7"></rect>
+  <rect x="17" y="44" width="7" height="7"></rect>
+  <rect x="34" y="0" width="24" height="7"></rect>
+  <rect x="34" y="11" width="7" height="7"></rect>
+  <rect x="34" y="22" width="17" height="7"></rect>
+  <rect x="34" y="33" width="7" height="7"></rect>
+  <rect x="34" y="44" width="7" height="7"></rect>
+</svg>

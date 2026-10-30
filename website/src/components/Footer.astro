@@ -1,0 +1,157 @@
+---
+import Mark from './Mark.astro';
+import { links, targets } from '../data/content';
+const year = 2026;
+---
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer__grid">
+      <div class="footer__brand">
+        <Mark size={44} color="#ff4f1f" />
+        <p class="footer__name display">AgentForge</p>
+        <p class="body footer__desc">
+          Open-source compiler and runtime for AI inference silicon. Research and baseline, October 2026.
+          Apache-2.0.
+        </p>
+      </div>
+
+      <div class="footer__col">
+        <p class="label label--accent">Documentation</p>
+        <ul class="footer__links mono">
+          <li><a href={links.designDoc}>Design doc 0001</a></li>
+          <li><a href={links.report}>Research report</a></li>
+          <li><a href={links.notes}>Research notes 01 to 08</a></li>
+          <li><a href={links.roadmap}>Roadmap</a></li>
+        </ul>
+      </div>
+
+      <div class="footer__col">
+        <p class="label label--accent">Project</p>
+        <ul class="footer__links mono">
+          <li><a href={links.repo}>GitHub</a></li>
+          <li><a href={links.contributing}>Contributing</a></li>
+          <li><a href={links.license}>License</a></li>
+          <li><a href={links.machines}>Machine files</a></li>
+        </ul>
+      </div>
+
+      <div class="footer__col footer__col--wide">
+        <p class="label label--accent">Targets</p>
+        <p class="label footer__tl">Reachable today</p>
+        <ul class="chips">
+          {targets.open.map((t) => <li class="chip">{t}</li>)}
+        </ul>
+        <p class="label footer__tl">Modelled through machine files</p>
+        <ul class="chips">
+          {targets.modelled.map((t) => <li class="chip chip--mute">{t}</li>)}
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer__bottom">
+      <div class="checker" aria-hidden="true"></div>
+      <p class="label">© {year} AgentForge contributors / built with Astro / no tracking</p>
+      <p class="label footer__id">AF · 0001 / M0 / 2026-10</p>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    border-top: 1px solid var(--line-2);
+    padding-block: clamp(48px, 6vw, 88px) 32px;
+    background: var(--bg-1);
+  }
+
+  .footer__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr);
+    gap: 40px;
+  }
+
+  .footer__name {
+    font-size: 22px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-variation-settings: 'wdth' 118;
+    margin-top: 18px;
+  }
+
+  .footer__desc {
+    margin-top: 14px;
+    font-size: 14.5px;
+    max-width: 34ch;
+  }
+
+  .footer__links {
+    display: grid;
+    gap: 10px;
+    margin-top: 18px;
+    font-size: 13px;
+  }
+
+  .footer__links a {
+    color: var(--paper-2);
+  }
+
+  .footer__links a:hover {
+    color: var(--accent);
+  }
+
+  .footer__tl {
+    margin-top: 18px;
+    margin-bottom: 8px;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .footer__bottom {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 24px;
+    align-items: center;
+    margin-top: clamp(40px, 5vw, 64px);
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
+
+  .checker {
+    width: 72px;
+    height: 18px;
+    background:
+      repeating-conic-gradient(var(--accent) 0 25%, transparent 0 50%) 0 0 / 18px 18px;
+  }
+
+  .footer__id {
+    text-align: right;
+  }
+
+  @media (max-width: 960px) {
+    .footer__grid {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .footer__col--wide {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .footer__grid {
+      grid-template-columns: 1fr;
+    }
+
+    .footer__bottom {
+      grid-template-columns: 1fr;
+    }
+
+    .footer__id {
+      text-align: left;
+    }
+  }
+</style>
