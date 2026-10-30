@@ -2,21 +2,50 @@
 import '@fontsource-variable/archivo/wdth.css';
 import '@fontsource-variable/jetbrains-mono';
 import '../styles/global.css';
+import { links, seo } from '../data/content';
 
 interface Props {
   title?: string;
   description?: string;
 }
 
-const {
-  title = 'AgentForge: a compiler and runtime for AI inference silicon',
-  description =
-    'AgentForge compiles the agent program and the model together against an explicit machine model, so KV-cache residency, prefetch, prefill/decode placement and kernels are planned from what the agent already knows. Open source, written in Rust.',
-} = Astro.props;
+const { title = seo.title, description = seo.description } = Astro.props;
 
-// The site is served under a base path on GitHub Pages; public assets need it prefixed.
+// The site is served under a base path on GitHub Pages; public assets need it prefixed,
+// and social cards need absolute URLs.
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const canonical = Astro.site ? new URL(`${base}/`, Astro.site).href : undefined;
+const absolute = (p: string) => (Astro.site ? new URL(`${base}/${p}`, Astro.site).href : undefined);
+const canonical = absolute('');
+const imageUrl = absolute(seo.image.path);
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebSite',
+      '@id': canonical ? `${canonical}#website` : undefined,
+      url: canonical,
+      name: seo.name,
+      description: seo.description,
+      inLanguage: 'en',
+    },
+    {
+      '@type': 'SoftwareSourceCode',
+      '@id': canonical ? `${canonical}#software` : undefined,
+      name: seo.name,
+      description: seo.description,
+      url: canonical,
+      codeRepository: links.repo,
+      programmingLanguage: 'Rust',
+      runtimePlatform: 'Rust 1.90',
+      license: 'https://www.apache.org/licenses/LICENSE-2.0',
+      isAccessibleForFree: true,
+      datePublished: seo.published,
+      keywords: seo.keywords.join(', '),
+      image: imageUrl,
+    },
+  ],
+};
 ---
 
 <!doctype html>
@@ -26,16 +55,39 @@ const canonical = Astro.site ? new URL(`${base}/`, Astro.site).href : undefined;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <meta name="keywords" content={seo.keywords.join(', ')} />
+    <meta name="author" content="AgentForge contributors" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="theme-color" content="#0c0b09" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="application-name" content={seo.name} />
+    <meta name="apple-mobile-web-app-title" content={seo.name} />
     <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} />
+    <link rel="apple-touch-icon" sizes="180x180" href={`${base}/apple-touch-icon.png`} />
     {canonical && <link rel="canonical" href={canonical} />}
+    <link rel="sitemap" type="application/xml" href={`${base}/sitemap.xml`} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={seo.name} />
+    <meta property="og:locale" content={seo.locale} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="AgentForge" />
     {canonical && <meta property="og:url" content={canonical} />}
-    <meta name="twitter:card" content="summary" />
+    {imageUrl && <meta property="og:image" content={imageUrl} />}
+    {imageUrl && <meta property="og:image:secure_url" content={imageUrl} />}
+    <meta property="og:image:type" content={seo.image.type} />
+    <meta property="og:image:width" content={String(seo.image.width)} />
+    <meta property="og:image:height" content={String(seo.image.height)} />
+    <meta property="og:image:alt" content={seo.image.alt} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    {imageUrl && <meta name="twitter:image" content={imageUrl} />}
+    <meta name="twitter:image:alt" content={seo.image.alt} />
+
     <meta name="generator" content={Astro.generator} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>

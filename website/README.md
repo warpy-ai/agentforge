@@ -50,5 +50,12 @@ src/
 public/favicon.svg
 ```
 
+## Metadata
+
+Title, description, keywords, Open Graph and Twitter tags, JSON-LD and the social card all come
+from the `seo` object in `src/data/content.ts`. `npm run og` regenerates `public/og-image.png`
+and `public/apple-touch-icon.png` from `scripts/og-image.mjs` after copy changes. `public/sitemap.xml`
+lists the one page; update its `lastmod` when the content changes.
+
 Numbers on the page come from `docs/design/0001-approach.md` and the bundled machine files in
 `crates/agentforge-machine/machines/`. Update `src/data/content.ts` when they change.

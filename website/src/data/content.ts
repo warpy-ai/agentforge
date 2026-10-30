@@ -386,3 +386,33 @@ export const targets = {
   open: ['NVIDIA', 'AMD', 'Intel', 'Apple GPU', 'Tenstorrent', 'AMD XDNA 2', 'Arm Ethos-U', 'CPU'],
   modelled: ['TPU', 'Trainium', 'Groq / LPX', 'Cerebras', 'SambaNova', 'Etched', 'd-Matrix'],
 };
+
+// Document metadata used by the layout for <head> tags, social cards and structured data.
+export const seo = {
+  name: 'AgentForge',
+  title: 'AgentForge: a compiler and runtime for AI inference silicon',
+  description:
+    'AgentForge compiles the agent program and the model together against an explicit machine model, so KV-cache residency, prefetch, prefill/decode placement and kernels are planned from what the agent already knows. Open source, written in Rust.',
+  keywords: [
+    'AI inference compiler',
+    'inference silicon',
+    'KV cache residency',
+    'prefill and decode placement',
+    'agentic workloads',
+    'LLM serving',
+    'machine model',
+    'tile IR',
+    'NVFP4',
+    'MXFP4',
+    'Rust',
+  ],
+  locale: 'en_US',
+  image: {
+    path: 'og-image.png',
+    type: 'image/png',
+    width: 1200,
+    height: 630,
+    alt: 'AgentForge: compile the agent program and the model together. A compiler and runtime for AI inference silicon, written in Rust.',
+  },
+  published: '2026-10-30',
+};
