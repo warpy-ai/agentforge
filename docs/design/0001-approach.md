@@ -62,6 +62,7 @@ Layers, top to bottom:
 
 | Prior art | What it does | What AgentForge adds |
 |---|---|---|
+| llm-d (CNCF, v1.0 on 2026-10-20), NVIDIA Dynamo | Request-time routing, KV-aware placement, tiered offload and prefill/decode disaggregation above vLLM and SGLang; llm-d's agent-aware serving infers turn depth from a client header and a dispatch count, with an idle timer in place of tool durations | A plan computed before the request from the agent program and the machine model: residency, prefetch timed to the predicted return, placement across device classes; the plan can be consumed through their scheduler plugin and KV connector interfaces |
 | Continuum (ICLR 2026) | KV time-to-live after tool calls, predicted at runtime | Liveness and tiering decided from the program, with prefetch and placement, not only pinning |
 | CacheWise, ThunderAgent, Kairos, TokenCake | Runtime eviction and scheduling from tool metadata | Same information consumed at compile time and shared with kernel generation |
 | SGLang frontend, Parrot | LM-program abstractions above a serving runtime | A compiler below them with an explicit machine model |
@@ -279,7 +280,9 @@ multi-device placement (one device class per run).
 
 NVIDIA's EULA and closed assemblers; Tile IR closed to contributions; divergent vendor numerics;
 closed decode tiers; attention targets that move every few months; Luminal and Qualcomm's
-Modular as competitors; alpha-quality Rust MLIR bindings (avoided in the baseline).
+Modular as competitors; llm-d and Dynamo absorbing agent-aware policies into the routing layer,
+which caps the gain left for compile-time planning unless M1 measures against their policies
+rather than LRU; alpha-quality Rust MLIR bindings (avoided in the baseline).
 
 ## 7. Decisions
 

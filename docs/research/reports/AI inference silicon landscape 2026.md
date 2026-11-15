@@ -20,9 +20,10 @@ notes by number.
   added Gluon; Helion 1.0 reached GA under the Linux Foundation; Qualcomm bought Modular (Mojo
   and MAX) for about 3.1 to 3.9 billion dollars; Groq's technology went to NVIDIA (notes 03, 05).
 - **The serving layer, not the compiler, owns the dominant costs.** KV cache placement,
-  batching, disaggregation and prefix reuse live in Python schedulers (vLLM, SGLang, Dynamo) over
-  hand-written per-vendor kernels; every 2025 to 2026 agentic-serving system is a runtime policy
-  around a black-box model (note 06).
+  batching, disaggregation and prefix reuse live in the serving layer (vLLM, SGLang, Dynamo and
+  the llm-d router) over hand-written per-vendor kernels; every 2025 to 2026 agentic-serving
+  system, llm-d v1.0's agent-aware serving included, is a runtime policy around a black-box model
+  (note 06).
 - **Workloads are agentic and prefix-heavy.** A median coding-agent step carries about 119k
   prefix tokens, appends 875 and generates 214, with 95 to 96 percent prefix-cache hit rates and
   misses caused by long idle gaps; decode runs at 1 to 2 FLOP per byte on hardware whose ridge
@@ -135,8 +136,13 @@ portability layer is now scarce.
 
 vLLM, SGLang and Dynamo own scheduling, paged KV, prefix caching, prefill/decode disaggregation
 and KV tiering through LMCache, Mooncake, FlexKV and NIXL; TensorRT-LLM dropped its own engine
-for PyTorch. The compiler-to-server surface is the attention kernel interface over paged KV plus
-KV connector APIs. The model's kernel target moves every few months: DeepSeek V4 pairs
+for PyTorch. llm-d (CNCF Sandbox; Red Hat, Google Cloud, IBM Research, CoreWeave, NVIDIA) is the
+Kubernetes routing layer above vLLM and SGLang: prefix-cache-aware endpoint picking, tiered KV
+offload, prefill/decode disaggregation and, since v1.0 on 2026-10-20, agent-aware serving whose
+turn priority is inferred from a client header and a dispatch count, with an idle timer in place
+of tool durations. The compiler-to-server surface is the attention kernel interface over paged KV
+plus KV connector APIs and, above the engines, the llm-d endpoint picker's plugin interface. The
+model's kernel target moves every few months: DeepSeek V4 pairs
 sliding-window and compressed attention in every layer with native FP4 MoE; Qwen3-Next and Kimi
 Linear mix recurrent layers with attention; speculative decoding accepts 60 to 80 percent of
 draft tokens.
