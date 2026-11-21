@@ -54,6 +54,12 @@ pub enum ResidencyAction {
         tier: String,
         prefetch_lead_s: f64,
     },
+    /// Keep the KV on the device and also copy it to a tier, so that a later eviction writes
+    /// only what the copy has not covered. Reactive policies return it; [`plan_residency`]
+    /// never does.
+    WriteThrough {
+        tier_index: usize,
+    },
     Drop,
 }
 

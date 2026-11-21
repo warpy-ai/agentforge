@@ -5,14 +5,16 @@
 //! start of the decode), and one transfer channel per device group moves KV between the device
 //! and the tiers. By default a prefill stalls every decode running when it starts for its whole
 //! duration (see [`SimConfig::prefill_stalls_decode`]). Session KV lives in one of: device
-//! memory, a tier, in flight back to the device, or nowhere (dropped, which forces a prefix
-//! recompute on the next step).
+//! memory, device memory mirrored (a write-through copy has landed the first part of it in a
+//! tier, so evicting it writes only the rest), a tier, in flight back to the device, or nowhere
+//! (dropped, which forces a prefix recompute on the next step).
 //!
-//! Fairness between policies: pressure evictions are available to both policies and their
+//! Fairness between policies: pressure evictions are available to every policy and their
 //! writes occupy the transfer channel before the arriving session can start, because memory is
 //! only free once the copy has landed. The plan policy's advantage comes from knowing which tool
 //! a session is waiting on and spilling during the waits the program predicts, not from a
-//! cheaper eviction primitive.
+//! cheaper eviction primitive; the write-through policy makes evictions cheaper by paying for
+//! the copies during every wait instead.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -101,10 +103,17 @@ pub enum SimError {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum KvState {
     Absent,
-    OnDevice,
-    OnTier(usize),
-    InFlight { ready_at: f64 },
     Dropped,
+    OnDevice,
+    /// On the device, with the first `bytes` of it also landed in `tier`.
+    Mirrored {
+        tier: usize,
+        bytes: f64,
+    },
+    OnTier(usize),
+    InFlight {
+        ready_at: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,11 +124,12 @@ enum Event {
     DecodeDone {
         sid: usize,
     },
-    SpillDone {
+    CopyDone {
         sid: usize,
-        tier: usize,
         gen: u32,
+        tier: usize,
         bytes: f64,
+        release: bool,
     },
     PrefetchDue {
         sid: usize,
@@ -170,7 +180,7 @@ struct Sess {
     gen: u32,
     active: bool,
     done: bool,
-    spill_pending: bool,
+    copying: bool,
     step_arrival: f64,
     prefetch_retries: u32,
 }
@@ -195,6 +205,7 @@ struct Metrics {
     spill_bytes: f64,
     hidden_spill_bytes: f64,
     evictions: u64,
+    free_evictions: u64,
     evicted_drops: u64,
     planned_drops: u64,
     capacity_waits: u64,
@@ -261,7 +272,7 @@ impl<'a> Sim<'a> {
                 gen: 0,
                 active: false,
                 done: s.steps.is_empty(),
-                spill_pending: false,
+                copying: false,
                 step_arrival: s.arrival_s,
                 prefetch_retries: 0,
             })
@@ -319,6 +330,68 @@ impl<'a> Sim<'a> {
         cost::transfer_seconds(bytes, bw_gbps * f64::from(self.cfg.tp), latency_us)
     }
 
+    fn unmirrored_bytes(&self, sid: usize, tier: usize) -> f64 {
+        let s = &self.sess[sid];
+        match s.state {
+            KvState::Mirrored { tier: t, bytes } if t == tier => s.kv_bytes - bytes,
+            _ => s.kv_bytes,
+        }
+    }
+
+    fn discard_mirror(&mut self, sid: usize) {
+        if let KvState::Mirrored { tier, bytes } = self.sess[sid].state {
+            self.tier_used[tier] -= bytes;
+            self.sess[sid].state = KvState::OnDevice;
+        }
+    }
+
+    fn claim_tier(&mut self, sid: usize, tier: usize) -> f64 {
+        let write = self.unmirrored_bytes(sid, tier);
+        if !matches!(self.sess[sid].state, KvState::Mirrored { tier: t, .. } if t == tier) {
+            self.discard_mirror(sid);
+        }
+        self.tier_used[tier] += write;
+        write
+    }
+
+    fn start_copy(
+        &mut self,
+        sid: usize,
+        tier: usize,
+        now: f64,
+        release: bool,
+        return_at: f64,
+    ) -> Option<f64> {
+        if tier >= self.cfg.tiers.len()
+            || self.sess[sid].kv_bytes <= 0.0
+            || self.tier_free(tier) < self.unmirrored_bytes(sid, tier)
+        {
+            return None;
+        }
+        let bytes = self.claim_tier(sid, tier);
+        let t = &self.cfg.tiers[tier];
+        let start = now.max(self.dev.transfer_free_at);
+        let lands = start + self.transfer(bytes, t.write_bw_gbps, t.latency_us);
+        self.dev.transfer_free_at = lands;
+        self.sess[sid].copying = true;
+        let gen = self.sess[sid].gen;
+        self.push(
+            lands,
+            Event::CopyDone {
+                sid,
+                gen,
+                tier,
+                bytes,
+                release,
+            },
+        );
+        self.m.spill_bytes += bytes;
+        if lands <= return_at {
+            self.m.hidden_spill_bytes += bytes;
+        }
+        Some(lands)
+    }
+
     fn recompute_seconds(&self, prefix_tokens: u64) -> Result<f64, CostError> {
         if prefix_tokens == 0 {
             return Ok(0.0);
@@ -357,12 +430,13 @@ impl<'a> Sim<'a> {
             match ev {
                 Event::StepArrival { sid } => self.on_arrival(sid, t)?,
                 Event::DecodeDone { sid } => self.on_decode_done(sid, t)?,
-                Event::SpillDone {
+                Event::CopyDone {
                     sid,
-                    tier,
                     gen,
+                    tier,
                     bytes,
-                } => self.on_spill_done(sid, tier, gen, bytes),
+                    release,
+                } => self.on_copy_done(sid, gen, tier, bytes, release),
                 Event::PrefetchDue { sid, gen } => self.on_prefetch_due(sid, gen, t),
             }
         }
@@ -382,10 +456,10 @@ impl<'a> Sim<'a> {
                 *i != exclude
                     && !s.active
                     && !s.done
-                    && !s.spill_pending
+                    && !s.copying
                     && s.kv_bytes > 0.0
                     && match s.state {
-                        KvState::OnDevice => true,
+                        KvState::OnDevice | KvState::Mirrored { .. } => true,
                         KvState::InFlight { ready_at } => ready_at <= now,
                         _ => false,
                     }
@@ -420,19 +494,29 @@ impl<'a> Sim<'a> {
             if freed >= shortfall {
                 break;
             }
-            let dest = (0..cfg.tiers.len()).find(|&i| self.tier_free(i) >= v.kv_bytes);
+            let dest = match self.sess[v.session].state {
+                KvState::Mirrored { tier, bytes } if self.tier_free(tier) >= v.kv_bytes - bytes => {
+                    Some(tier)
+                }
+                _ => (0..cfg.tiers.len()).find(|&i| self.tier_free(i) >= v.kv_bytes),
+            };
             match dest {
                 Some(i) => {
-                    let tier = &cfg.tiers[i];
-                    let start = now.max(self.dev.transfer_free_at);
-                    let dur = self.transfer(v.kv_bytes, tier.write_bw_gbps, tier.latency_us);
-                    self.dev.transfer_free_at = start + dur;
-                    usable_at = usable_at.max(start + dur);
-                    self.tier_used[i] += v.kv_bytes;
+                    let write = self.claim_tier(v.session, i);
+                    if write > 0.0 {
+                        let tier = &cfg.tiers[i];
+                        let start = now.max(self.dev.transfer_free_at);
+                        let dur = self.transfer(write, tier.write_bw_gbps, tier.latency_us);
+                        self.dev.transfer_free_at = start + dur;
+                        usable_at = usable_at.max(start + dur);
+                    } else {
+                        self.m.free_evictions += 1;
+                    }
                     self.sess[v.session].state = KvState::OnTier(i);
                     self.m.evictions += 1;
                 }
                 None => {
+                    self.discard_mirror(v.session);
                     self.sess[v.session].state = KvState::Dropped;
                     self.sess[v.session].kv_bytes = 0.0;
                     self.m.evicted_drops += 1;
@@ -456,7 +540,10 @@ impl<'a> Sim<'a> {
         let kv_after = self.kv_bytes_for(prefix + new_tokens + out_tokens);
         let kv_new = (kv_after - kv_prefix).max(0.0);
         let state = self.sess[sid].state;
-        let resident = matches!(state, KvState::OnDevice | KvState::InFlight { .. });
+        let resident = matches!(
+            state,
+            KvState::OnDevice | KvState::Mirrored { .. } | KvState::InFlight { .. }
+        );
         let need = if resident { kv_new } else { kv_prefix + kv_new };
         if need > self.dev.kv_capacity {
             return Err(SimError::SessionTooLarge {
@@ -465,9 +552,8 @@ impl<'a> Sim<'a> {
                 capacity_gb: self.dev.kv_capacity / 1e9,
             });
         }
-        // Any pending spill or prefetch for this session is now stale.
         self.sess[sid].gen += 1;
-        self.sess[sid].spill_pending = false;
+        self.sess[sid].copying = false;
 
         let mut ready = now;
         if self.dev.kv_used + need > self.dev.kv_capacity {
@@ -493,7 +579,7 @@ impl<'a> Sim<'a> {
         let mut prefill_tokens = new_tokens;
         let mut cached = prefix;
         match state {
-            KvState::OnDevice => {}
+            KvState::OnDevice | KvState::Mirrored { .. } => {}
             KvState::InFlight { ready_at } => {
                 if ready_at > ready {
                     self.m.foreground_kv_wait_s += ready_at - ready;
@@ -526,7 +612,9 @@ impl<'a> Sim<'a> {
         }
         self.dev.kv_used += kv_new;
         self.sess[sid].kv_bytes = kv_after;
-        self.sess[sid].state = KvState::OnDevice;
+        if !matches!(state, KvState::Mirrored { .. }) {
+            self.sess[sid].state = KvState::OnDevice;
+        }
 
         let phase = cost::prefill(&cfg.model, &cfg.target(), prefill_tokens, cached)?;
         let start = ready.max(self.dev.prefill_free_at);
@@ -582,6 +670,7 @@ impl<'a> Sim<'a> {
         let kv = self.sess[sid].kv_bytes;
         let Some(tw) = tool else {
             self.sess[sid].done = true;
+            self.discard_mirror(sid);
             self.dev.kv_used -= kv;
             self.sess[sid].kv_bytes = 0.0;
             self.sess[sid].state = KvState::Absent;
@@ -593,6 +682,10 @@ impl<'a> Sim<'a> {
         self.sess[sid].predicted_return = now + tw.latency.median();
         let recompute_s = self.recompute_seconds(self.sess[sid].prefix_tokens)?;
         let (tier_free, device_free, recompute_s) = self.context(recompute_s);
+        let mirrored_bytes = match self.sess[sid].state {
+            KvState::Mirrored { bytes, .. } => bytes,
+            _ => 0.0,
+        };
         let action = {
             let cx = PolicyContext {
                 now,
@@ -604,11 +697,12 @@ impl<'a> Sim<'a> {
                 recompute_s,
                 step_hint_s: self.step_hint_s,
             };
-            policy.on_tool_call(&cx, kv, &tw.latency)
+            policy.on_tool_call(&cx, kv, mirrored_bytes, &tw.latency)
         };
         match action {
             ResidencyAction::Keep => {}
             ResidencyAction::Drop => {
+                self.discard_mirror(sid);
                 self.dev.kv_used -= kv;
                 self.sess[sid].kv_bytes = 0.0;
                 self.sess[sid].state = KvState::Dropped;
@@ -619,50 +713,35 @@ impl<'a> Sim<'a> {
                 prefetch_lead_s,
                 ..
             } => {
-                if tier_index < cfg.tiers.len() && self.tier_free(tier_index) >= kv && kv > 0.0 {
-                    let tier = &cfg.tiers[tier_index];
-                    let start = now.max(self.dev.transfer_free_at);
-                    let dur = self.transfer(kv, tier.write_bw_gbps, tier.latency_us);
-                    self.dev.transfer_free_at = start + dur;
-                    let spill_done = start + dur;
-                    self.tier_used[tier_index] += kv;
-                    self.sess[sid].spill_pending = true;
+                if let Some(lands) = self.start_copy(sid, tier_index, now, true, return_at) {
                     self.sess[sid].prefetch_retries = 0;
                     let gen = self.sess[sid].gen;
-                    self.push(
-                        spill_done,
-                        Event::SpillDone {
-                            sid,
-                            tier: tier_index,
-                            gen,
-                            bytes: kv,
-                        },
-                    );
                     // Prefetch so the KV is back before the 10th-percentile return.
-                    let due =
-                        (now + tw.latency.quantile(0.1) - prefetch_lead_s).max(spill_done + 1e-6);
+                    let due = (now + tw.latency.quantile(0.1) - prefetch_lead_s).max(lands + 1e-6);
                     self.push(due, Event::PrefetchDue { sid, gen });
-                    self.m.spill_bytes += kv;
-                    if spill_done <= return_at {
-                        self.m.hidden_spill_bytes += kv;
-                    }
                 }
+            }
+            ResidencyAction::WriteThrough { tier_index } => {
+                self.start_copy(sid, tier_index, now, false, return_at);
             }
         }
         self.push(return_at, Event::StepArrival { sid });
         Ok(())
     }
 
-    fn on_spill_done(&mut self, sid: usize, tier: usize, gen: u32, bytes: f64) {
-        let s = &self.sess[sid];
-        if s.gen != gen || s.active || s.done || !s.spill_pending {
-            // Stale: the session came back before the copy landed; release the reservation.
+    fn on_copy_done(&mut self, sid: usize, gen: u32, tier: usize, bytes: f64, release: bool) {
+        if self.sess[sid].gen != gen {
             self.tier_used[tier] -= bytes;
             return;
         }
-        self.sess[sid].spill_pending = false;
-        self.dev.kv_used -= bytes;
-        self.sess[sid].state = KvState::OnTier(tier);
+        self.sess[sid].copying = false;
+        let kv = self.sess[sid].kv_bytes;
+        self.sess[sid].state = if release {
+            self.dev.kv_used -= kv;
+            KvState::OnTier(tier)
+        } else {
+            KvState::Mirrored { tier, bytes: kv }
+        };
     }
 
     fn on_prefetch_due(&mut self, sid: usize, gen: u32, now: f64) {
@@ -717,6 +796,7 @@ impl<'a> Sim<'a> {
             spill_gb: self.m.spill_bytes / 1e9,
             hidden_spill_gb: self.m.hidden_spill_bytes / 1e9,
             evictions: self.m.evictions,
+            free_evictions: self.m.free_evictions,
             evicted_drops: self.m.evicted_drops,
             planned_drops: self.m.planned_drops,
             capacity_waits: self.m.capacity_waits,
@@ -731,7 +811,7 @@ impl<'a> Sim<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{Lru, Plan};
+    use crate::policy::{Lru, Plan, WriteThrough};
     use crate::trace::{synthesize, Session, SyntheticConfig, TraceStep};
     use agentforge_ir::{AgentProgram, Precision};
     use agentforge_machine::Machine;
@@ -874,6 +954,30 @@ mod tests {
             overlapped.step_p50_s
         );
         assert_eq!(run(&cfg, &t, &Lru).unwrap(), overlapped);
+    }
+
+    #[test]
+    fn write_through_makes_pressure_evictions_cheaper() {
+        let cfg = pressure_config();
+        let t = trace(80, 11);
+        let lru = run(&cfg, &t, &Lru).unwrap();
+        let wt = run(&cfg, &t, &WriteThrough).unwrap();
+        assert_eq!(wt, run(&cfg, &t, &WriteThrough).unwrap());
+        assert_eq!(wt.sessions_done, wt.sessions);
+        assert_eq!(wt.steps, t.total_steps());
+        assert!(
+            wt.free_evictions > 0,
+            "{} of {}",
+            wt.free_evictions,
+            wt.evictions
+        );
+        assert_eq!(wt.recompute_tokens, 0);
+        assert!(
+            wt.foreground_kv_wait_s < lru.foreground_kv_wait_s,
+            "write-through {:.1}s vs lru {:.1}s",
+            wt.foreground_kv_wait_s,
+            lru.foreground_kv_wait_s
+        );
     }
 
     #[test]

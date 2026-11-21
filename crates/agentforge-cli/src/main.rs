@@ -13,6 +13,7 @@ use agentforge_ir::{AgentProgram, LatencyModel, ModelSpec, Precision};
 use agentforge_machine::Machine;
 use agentforge_sim::{
     render_table, run, synthesize, Lru, Plan, Policy, SimConfig, SimReport, SyntheticConfig, Trace,
+    WriteThrough,
 };
 
 #[derive(Parser)]
@@ -148,8 +149,12 @@ enum PlanCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PolicyChoice {
     Lru,
+    WriteThrough,
     Plan,
+    /// lru and plan.
     Both,
+    /// lru, write-through and plan.
+    All,
 }
 
 #[derive(Subcommand)]
@@ -469,6 +474,10 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
                 ResidencyAction::Spill { tier, prefetch_lead_s, .. } => println!(
                     "decision: spill to '{tier}' during the wait, prefetch {prefetch_lead_s:.2} s before the predicted return"
                 ),
+                ResidencyAction::WriteThrough { tier_index } => println!(
+                    "decision: keep on device and write through to '{}' during the wait",
+                    r.machine.tiers[*tier_index].name
+                ),
                 ResidencyAction::Drop => println!("decision: drop and recompute on return"),
             }
             if let Some(f) = d.fetch_s {
@@ -550,8 +559,10 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             }
             let policies: Vec<Box<dyn Policy>> = match policy {
                 PolicyChoice::Lru => vec![Box::new(Lru)],
+                PolicyChoice::WriteThrough => vec![Box::new(WriteThrough)],
                 PolicyChoice::Plan => vec![Box::new(Plan)],
                 PolicyChoice::Both => vec![Box::new(Lru), Box::new(Plan)],
+                PolicyChoice::All => vec![Box::new(Lru), Box::new(WriteThrough), Box::new(Plan)],
             };
             let mut reports: Vec<SimReport> = Vec::new();
             for p in &policies {

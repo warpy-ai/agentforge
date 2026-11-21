@@ -25,6 +25,7 @@ pub struct SimReport {
     pub spill_gb: f64,
     pub hidden_spill_gb: f64,
     pub evictions: u64,
+    pub free_evictions: u64,
     pub evicted_drops: u64,
     pub planned_drops: u64,
     pub capacity_waits: u64,
@@ -182,6 +183,13 @@ pub fn render_table(reports: &[SimReport]) -> String {
         (
             "pressure evictions",
             reports.iter().map(|r| r.evictions.to_string()).collect(),
+        ),
+        (
+            "evictions with no write",
+            reports
+                .iter()
+                .map(|r| r.free_evictions.to_string())
+                .collect(),
         ),
         (
             "evictions that dropped KV",
