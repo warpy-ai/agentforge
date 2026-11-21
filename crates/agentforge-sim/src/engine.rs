@@ -163,7 +163,7 @@ struct Sess {
     active: bool,
     done: bool,
     spill_pending: bool,
-    step_start: f64,
+    step_arrival: f64,
     prefetch_retries: u32,
 }
 
@@ -253,7 +253,7 @@ impl<'a> Sim<'a> {
                 active: false,
                 done: s.steps.is_empty(),
                 spill_pending: false,
-                step_start: s.arrival_s,
+                step_arrival: s.arrival_s,
                 prefetch_retries: 0,
             })
             .collect();
@@ -480,7 +480,6 @@ impl<'a> Sim<'a> {
             }
         }
         self.sess[sid].active = true;
-        self.sess[sid].step_start = now;
 
         let mut prefill_tokens = new_tokens;
         let mut cached = prefix;
@@ -524,7 +523,7 @@ impl<'a> Sim<'a> {
         let start = ready.max(self.dev.prefill_free_at);
         let first_token = start + phase.seconds;
         self.dev.prefill_free_at = first_token;
-        self.m.ttft.push(first_token - now);
+        self.m.ttft.push(first_token - self.sess[sid].step_arrival);
         self.m.device_busy_s += phase.seconds;
         self.m.prefill_tokens += prefill_tokens;
         self.sess[sid].prefix_tokens = prefix + new_tokens;
@@ -548,7 +547,7 @@ impl<'a> Sim<'a> {
         let cfg = self.cfg;
         let policy = self.policy;
         self.dev.decoders.retain(|(s, _)| *s != sid);
-        self.m.step_latency.push(now - self.sess[sid].step_start);
+        self.m.step_latency.push(now - self.sess[sid].step_arrival);
         self.sess[sid].active = false;
         self.sess[sid].last_use = now;
         let step_idx = self.sess[sid].step_idx;
@@ -564,6 +563,7 @@ impl<'a> Sim<'a> {
             return Ok(());
         };
         let return_at = now + tw.wait_s.max(0.0);
+        self.sess[sid].step_arrival = return_at;
         self.sess[sid].predicted_return = now + tw.latency.median();
         let recompute_s = self.recompute_seconds(self.sess[sid].prefix_tokens)?;
         let (tier_free, device_free, recompute_s) = self.context(recompute_s);
@@ -705,7 +705,7 @@ impl<'a> Sim<'a> {
 mod tests {
     use super::*;
     use crate::policy::{Lru, Plan};
-    use crate::trace::{synthesize, SyntheticConfig};
+    use crate::trace::{synthesize, Session, SyntheticConfig, TraceStep};
     use agentforge_ir::{AgentProgram, Precision};
     use agentforge_machine::Machine;
 
@@ -783,6 +783,50 @@ mod tests {
             "plan {} vs lru {}",
             plan.recompute_tokens,
             lru.recompute_tokens
+        );
+    }
+
+    #[test]
+    fn ttft_includes_the_wait_for_device_memory() {
+        let m = Machine::builtin("h200").unwrap();
+        let model = ModelSpec::preset("llama-3.1-8b").unwrap();
+        let mut cfg = SimConfig::new(model, m.devices[0].clone(), m.tiers.clone(), 1);
+        cfg.kv_reserve_fraction = 0.8;
+        let (prefix, new_tokens, output_tokens) = (60_000, 1_000, 200);
+        let session = |id, arrival_s| Session {
+            id,
+            arrival_s,
+            initial_prefix_tokens: prefix,
+            steps: vec![TraceStep {
+                new_tokens,
+                output_tokens,
+                tool: None,
+            }],
+        };
+        let t = Trace {
+            sessions: vec![session(0, 0.0), session(1, 0.001)],
+        };
+        let need = cost::kv_bytes(&cfg.model, prefix + new_tokens + output_tokens) as f64;
+        let budget = cfg.kv_capacity_bytes();
+        assert!(need > budget / 2.0 && need < budget, "{need} of {budget}");
+
+        let r = run(&cfg, &t, &Lru).unwrap();
+
+        let target = cfg.target();
+        let first_prefill = cost::prefill(&cfg.model, &target, prefix + new_tokens, 0)
+            .unwrap()
+            .seconds;
+        let first_decode = output_tokens as f64
+            * cost::decode_step(&cfg.model, &target, prefix + new_tokens, 1)
+                .unwrap()
+                .seconds;
+        assert_eq!(r.sessions_done, 2);
+        assert!(r.capacity_waits >= 1, "{}", r.capacity_waits);
+        assert!(
+            r.ttft_p99_s >= first_prefill + first_decode,
+            "second TTFT {:.3}s, first session held the memory for {:.3}s",
+            r.ttft_p99_s,
+            first_prefill + first_decode
         );
     }
 
