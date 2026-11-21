@@ -2,7 +2,7 @@
 //!
 //! A machine is a set of devices (GPUs, SRAM LPUs, NPUs, CPUs) with compute per precision,
 //! device-attached memory and on-chip SRAM, plus memory tiers reachable from the devices (host
-//! DRAM, NVMe, remote pools) and links. Descriptions are TOML files; five are bundled and more
+//! DRAM, NVMe, remote pools) and links. Descriptions are TOML files; six are bundled and more
 //! can be loaded from disk. Numbers carry their sources in the file; vendor peaks are marked.
 
 use std::collections::BTreeMap;
@@ -134,6 +134,7 @@ pub enum MachineError {
 }
 
 const BUILTINS: &[(&str, &str)] = &[
+    ("h100", include_str!("../machines/h100.toml")),
     ("h200", include_str!("../machines/h200.toml")),
     ("b200", include_str!("../machines/b200.toml")),
     ("mi355x", include_str!("../machines/mi355x.toml")),
