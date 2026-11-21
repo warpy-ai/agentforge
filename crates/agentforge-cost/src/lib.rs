@@ -8,6 +8,8 @@
 use agentforge_ir::{ModelSpec, Precision};
 use agentforge_machine::{Device, Link};
 
+pub mod calibration;
+
 /// Achieved fractions of peak and fixed overheads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Efficiency {
