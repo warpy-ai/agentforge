@@ -16,4 +16,4 @@ pub use engine::{run, SimConfig, SimError};
 pub use policy::{by_name, Lru, Plan, Policy, PolicyContext, Victim};
 pub use report::{mean, percentile, render_table, SimReport};
 pub use rng::Rng;
-pub use trace::{synthesize, Session, SyntheticConfig, ToolWait, Trace, TraceStep};
+pub use trace::{synthesize, Session, StepCount, SyntheticConfig, ToolWait, Trace, TraceStep};
