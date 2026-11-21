@@ -29,6 +29,7 @@ pub struct SimReport {
     pub planned_drops: u64,
     pub capacity_waits: u64,
     pub prefetch_skipped: u64,
+    pub decode_stall_s: f64,
     pub device_busy_s: f64,
     pub prefill_tokens: u64,
 }
@@ -120,6 +121,13 @@ pub fn render_table(reports: &[SimReport]) -> String {
             reports
                 .iter()
                 .map(|r| format!("{:.2}", r.step_p99_s))
+                .collect(),
+        ),
+        (
+            "decode stalled by prefill (s)",
+            reports
+                .iter()
+                .map(|r| format!("{:.1}", r.decode_stall_s))
                 .collect(),
         ),
         (

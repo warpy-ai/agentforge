@@ -186,6 +186,9 @@ enum SimCommand {
         /// Override the capacity of the first (host DRAM) tier in GB.
         #[arg(long)]
         host_gb: Option<f64>,
+        /// Let decode run at full speed during a prefill instead of stalling for its duration.
+        #[arg(long)]
+        decode_overlaps_prefill: bool,
         /// Print reports as JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -506,6 +509,7 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             trace,
             save_trace,
             host_gb,
+            decode_overlaps_prefill,
             json,
         } => {
             let r = resolve(&target)?;
@@ -519,6 +523,7 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             }
             let mut cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
             cfg.link = r.machine.fastest_link().cloned();
+            cfg.prefill_stalls_decode = !decode_overlaps_prefill;
             let trace_data = match &trace {
                 Some(path) => {
                     let text = fs::read_to_string(path)

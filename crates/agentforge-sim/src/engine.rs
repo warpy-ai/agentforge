@@ -3,8 +3,10 @@
 //! Model of the machine: one device class scaled linearly by `tp`; prefill is serialized on the
 //! device, decode is batched (per-token time from the cost model with the batch size at the
 //! start of the decode), and one transfer channel per device group moves KV between the device
-//! and the tiers. Session KV lives in one of: device memory, a tier, in flight back to the
-//! device, or nowhere (dropped, which forces a prefix recompute on the next step).
+//! and the tiers. By default a prefill stalls every decode running when it starts for its whole
+//! duration (see [`SimConfig::prefill_stalls_decode`]). Session KV lives in one of: device
+//! memory, a tier, in flight back to the device, or nowhere (dropped, which forces a prefix
+//! recompute on the next step).
 //!
 //! Fairness between policies: pressure evictions are available to both policies and their
 //! writes occupy the transfer channel before the arriving session can start, because memory is
@@ -36,6 +38,11 @@ pub struct SimConfig {
     pub eff: Efficiency,
     /// Fraction of device memory reserved for activations and fragmentation.
     pub kv_reserve_fraction: f64,
+    /// Whether a prefill stalls the decodes running when it starts. Chunked prefill in current
+    /// engines lets decode progress one token per prefill chunk, which to first order is a stall
+    /// of the prefill's duration; the decode batch's KV reads do not slow a compute-bound
+    /// prefill, so the prefill keeps its own duration either way.
+    pub prefill_stalls_decode: bool,
 }
 
 impl SimConfig {
@@ -48,6 +55,7 @@ impl SimConfig {
             link: None,
             eff: Efficiency::default(),
             kv_reserve_fraction: 0.10,
+            prefill_stalls_decode: true,
         }
     }
 
@@ -191,6 +199,7 @@ struct Metrics {
     planned_drops: u64,
     capacity_waits: u64,
     prefetch_skipped: u64,
+    decode_stall_s: f64,
     device_busy_s: f64,
     prefill_tokens: u64,
     sessions_done: u32,
@@ -523,6 +532,17 @@ impl<'a> Sim<'a> {
         let start = ready.max(self.dev.prefill_free_at);
         let first_token = start + phase.seconds;
         self.dev.prefill_free_at = first_token;
+        if cfg.prefill_stalls_decode {
+            for (_, done) in self
+                .dev
+                .decoders
+                .iter_mut()
+                .filter(|(_, done)| *done > start)
+            {
+                *done += phase.seconds;
+                self.m.decode_stall_s += phase.seconds;
+            }
+        }
         self.m.ttft.push(first_token - self.sess[sid].step_arrival);
         self.m.device_busy_s += phase.seconds;
         self.m.prefill_tokens += prefill_tokens;
@@ -546,6 +566,12 @@ impl<'a> Sim<'a> {
     fn on_decode_done(&mut self, sid: usize, now: f64) -> Result<(), SimError> {
         let cfg = self.cfg;
         let policy = self.policy;
+        if let Some(&(_, done)) = self.dev.decoders.iter().find(|(s, _)| *s == sid) {
+            if done > now {
+                self.push(done, Event::DecodeDone { sid });
+                return Ok(());
+            }
+        }
         self.dev.decoders.retain(|(s, _)| *s != sid);
         self.m.step_latency.push(now - self.sess[sid].step_arrival);
         self.sess[sid].active = false;
@@ -695,6 +721,7 @@ impl<'a> Sim<'a> {
             planned_drops: self.m.planned_drops,
             capacity_waits: self.m.capacity_waits,
             prefetch_skipped: self.m.prefetch_skipped,
+            decode_stall_s: self.m.decode_stall_s,
             device_busy_s: self.m.device_busy_s,
             prefill_tokens: self.m.prefill_tokens,
         }
@@ -828,6 +855,25 @@ mod tests {
             r.ttft_p99_s,
             first_prefill + first_decode
         );
+    }
+
+    #[test]
+    fn prefill_stalls_the_decodes_it_interrupts() {
+        let mut cfg = pressure_config();
+        let t = trace(80, 11);
+        let stalled = run(&cfg, &t, &Lru).unwrap();
+        cfg.prefill_stalls_decode = false;
+        let overlapped = run(&cfg, &t, &Lru).unwrap();
+        assert_eq!(stalled.steps, overlapped.steps);
+        assert!(stalled.decode_stall_s > 0.0, "{}", stalled.decode_stall_s);
+        assert_eq!(overlapped.decode_stall_s, 0.0);
+        assert!(
+            stalled.step_p50_s > overlapped.step_p50_s,
+            "stalled {:.3}s vs overlapped {:.3}s",
+            stalled.step_p50_s,
+            overlapped.step_p50_s
+        );
+        assert_eq!(run(&cfg, &t, &Lru).unwrap(), overlapped);
     }
 
     #[test]
