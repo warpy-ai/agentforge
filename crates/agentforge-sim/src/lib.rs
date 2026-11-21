@@ -7,12 +7,16 @@
 //! predicted return. Everything is deterministic given a seed.
 
 pub mod engine;
+pub mod loaders;
 pub mod policy;
 pub mod report;
 pub mod rng;
 pub mod trace;
 
 pub use engine::{run, SimConfig, SimError};
+pub use loaders::{
+    fit_latency_models, load_trace, with_fitted_latencies, LoadError, LoadSummary, TraceFormat,
+};
 pub use policy::{by_name, Lru, Plan, Policy, PolicyContext, Victim};
 pub use report::{mean, percentile, render_table, SimReport};
 pub use rng::Rng;
