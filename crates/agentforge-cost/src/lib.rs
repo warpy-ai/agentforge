@@ -1,16 +1,19 @@
 //! Analytical cost model.
 //!
-//! Prefill and decode phases are modelled as the larger of a compute time and a memory time
-//! plus a small per-layer overhead, in the style of GenZ and LLMCompass (single-digit percent
-//! error on GPUs in their validations). Tensor parallelism scales compute and bandwidth linearly
-//! and adds two ring all-reduces of the activations per layer over the scale-up link.
+//! Prefill and decode phases are modelled per operator, in the style of GenZ and LLMCompass
+//! (single-digit percent error on GPUs in their validations): the dense projections and attention
+//! run as separate kernels one after the other, so each takes the larger of its compute time and
+//! memory time and the two add, plus a small per-layer overhead. Tensor parallelism scales
+//! compute and bandwidth linearly and adds two ring all-reduces of the activations per layer over
+//! the scale-up link.
 
 use agentforge_ir::{ModelSpec, Precision};
 use agentforge_machine::{Device, Link};
 
 pub mod calibration;
 
-/// Achieved fractions of peak and fixed overheads.
+/// Achieved fractions of peak and fixed overheads. The defaults are the grid point
+/// [`calibration::fit`] picks for the bundled TensorRT-LLM rows (`agentforge cost calibrate --fit`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Efficiency {
     /// Fraction of peak compute reached by large prefill GEMMs.
@@ -30,9 +33,9 @@ pub struct Efficiency {
 impl Default for Efficiency {
     fn default() -> Self {
         Efficiency {
-            mfu_prefill: 0.6,
+            mfu_prefill: 0.5,
             mfu_decode: 0.3,
-            bw_util: 0.8,
+            bw_util: 0.6,
             per_layer_overhead_s: 2e-5,
             link_util: 0.75,
         }
@@ -51,6 +54,12 @@ pub struct Target<'a> {
 }
 
 /// The cost breakdown of one phase.
+///
+/// The dense projections (weight reads against GEMM FLOPs) and attention (KV traffic against
+/// attention FLOPs) are two rooflines that run one after the other, so `seconds` is the sum of
+/// their bounding times plus overhead and communication. `compute_s` and `memory_s` sum the two
+/// parts; when both parts share a bound, `seconds` is the larger of them plus overhead and
+/// communication.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Phase {
     pub flops: f64,
@@ -62,37 +71,46 @@ pub struct Phase {
     /// does not overlap its all-reduces with compute in the engines this model calibrates against.
     pub comm_s: f64,
     pub seconds: f64,
+    bound: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct Work {
+    flops: f64,
+    bytes: f64,
 }
 
 impl Phase {
     fn new(
-        flops: f64,
-        bytes: f64,
+        dense: Work,
+        attention: Work,
         flops_per_s: f64,
         bytes_per_s: f64,
         overhead_s: f64,
         comm_s: f64,
     ) -> Phase {
-        let compute_s = flops / flops_per_s;
-        let memory_s = bytes / bytes_per_s;
+        let parts = [dense, attention].map(|w| (w.flops / flops_per_s, w.bytes / bytes_per_s));
+        let on_compute: f64 = parts.iter().filter(|(c, m)| c >= m).map(|(c, _)| c).sum();
+        let on_memory: f64 = parts.iter().filter(|(c, m)| c < m).map(|(_, m)| m).sum();
         Phase {
-            flops,
-            bytes,
-            compute_s,
-            memory_s,
+            flops: dense.flops + attention.flops,
+            bytes: dense.bytes + attention.bytes,
+            compute_s: parts.iter().map(|(c, _)| c).sum(),
+            memory_s: parts.iter().map(|(_, m)| m).sum(),
             overhead_s,
             comm_s,
-            seconds: compute_s.max(memory_s) + overhead_s + comm_s,
+            seconds: on_compute + on_memory + overhead_s + comm_s,
+            bound: if on_compute >= on_memory {
+                "compute"
+            } else {
+                "memory"
+            },
         }
     }
 
-    /// Which resource bounds the phase.
+    /// Which resource the larger share of the phase's critical path waits on.
     pub fn bound(&self) -> &'static str {
-        if self.compute_s >= self.memory_s {
-            "compute"
-        } else {
-            "memory"
-        }
+        self.bound
     }
 }
 
@@ -180,15 +198,20 @@ pub fn prefill_batch(
     let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
     let seqs = sequences as f64;
     let n = new_tokens as f64;
-    let linear_flops = 2.0 * model.active_params_per_token() as f64 * n;
-    let flops = seqs * (linear_flops + attention_flops(model, new_tokens, cached_prefix));
-    let bytes = model.weight_bytes() as f64
-        + seqs * (kv_bytes(model, cached_prefix) as f64 + model.kv_bytes_per_token() as f64 * n);
+    let dense = Work {
+        flops: seqs * 2.0 * model.active_params_per_token() as f64 * n,
+        bytes: model.weight_bytes() as f64,
+    };
+    let attention = Work {
+        flops: seqs * attention_flops(model, new_tokens, cached_prefix),
+        bytes: seqs
+            * (kv_bytes(model, cached_prefix) as f64 + model.kv_bytes_per_token() as f64 * n),
+    };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
     let comm = all_reduce_seconds(model, target, seqs * n)?;
     Ok(Phase::new(
-        flops,
-        bytes,
+        dense,
+        attention,
         flops_per_s,
         bytes_per_s,
         overhead,
@@ -208,15 +231,19 @@ pub fn decode_step(
     let batch = batch.max(1) as f64;
     let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_decode;
     let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
-    let per_seq_flops =
-        2.0 * model.active_params_per_token() as f64 + attention_flops(model, 1, context_tokens);
-    let flops = per_seq_flops * batch;
-    let bytes = model.weight_bytes() as f64 + batch * kv_bytes(model, context_tokens) as f64;
+    let dense = Work {
+        flops: batch * 2.0 * model.active_params_per_token() as f64,
+        bytes: model.weight_bytes() as f64,
+    };
+    let attention = Work {
+        flops: batch * attention_flops(model, 1, context_tokens),
+        bytes: batch * kv_bytes(model, context_tokens) as f64,
+    };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
     let comm = all_reduce_seconds(model, target, batch)?;
     Ok(Phase::new(
-        flops,
-        bytes,
+        dense,
+        attention,
         flops_per_s,
         bytes_per_s,
         overhead,
