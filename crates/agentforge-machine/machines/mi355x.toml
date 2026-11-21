@@ -44,9 +44,9 @@ notes = "One PCIe Gen5 NVMe drive per GPU; arrays scale linearly."
 
 [[links]]
 name = "infinity-fabric"
-bw_gbps = 1000
+bw_gbps = 537
 latency_us = 2
-notes = "Aggregate of seven Infinity Fabric links per GPU (vendor: above 1 TB/s)."
+notes = "Per direction per GPU: half of the vendor aggregate of seven Infinity Fabric links (above 1 TB/s bidirectional)."
 
 [[links]]
 name = "pcie5"

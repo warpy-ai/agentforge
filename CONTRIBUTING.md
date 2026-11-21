@@ -22,7 +22,8 @@ cargo test --workspace
 Add a TOML file under `crates/agentforge-machine/machines/`, register it in the `BUILTINS`
 table in `crates/agentforge-machine/src/lib.rs`, and cite every number in `sources` and
 `notes`. Mark vendor peaks as such. Capacities are in GB (10^9 bytes), bandwidths in TB/s for
-device memory and GB/s for tiers and links.
+device memory and GB/s for tiers and links. A link's `bw_gbps` is what one device sends in one
+direction; halve a vendor's bidirectional total and say so in `notes`.
 
 ## Adding a model preset
 

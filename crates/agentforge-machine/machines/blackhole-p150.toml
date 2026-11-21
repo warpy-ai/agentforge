@@ -33,7 +33,7 @@ notes = "PCIe Gen5 x16 host link."
 name = "qsfp-dd-800g"
 bw_gbps = 400
 latency_us = 5
-notes = "Four 800G ports, 400 GB/s aggregate."
+notes = "Four full-duplex 800G ports: 400 GB/s per direction."
 
 [[links]]
 name = "pcie5"

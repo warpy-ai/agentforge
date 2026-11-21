@@ -32,4 +32,4 @@ notes = "12 TB of DDR5 per rack reached over the rack fabric; per-LPU bandwidth 
 name = "rack-fabric"
 bw_gbps = 2500
 latency_us = 2
-notes = "640 TB/s scale-up per rack divided by 256 (vendor figure)."
+notes = "640 TB/s scale-up per rack divided by 256 (vendor figure; whether it counts both directions is not published, so this may be 2x optimistic)."

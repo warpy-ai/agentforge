@@ -97,6 +97,8 @@ impl MemoryTier {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Link {
     pub name: String,
+    /// Bandwidth in GB/s that one device can send in one direction. Vendors usually quote the
+    /// bidirectional total, which is twice this.
     pub bw_gbps: f64,
     #[serde(default)]
     pub latency_us: f64,
