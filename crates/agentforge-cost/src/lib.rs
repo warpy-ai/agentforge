@@ -103,6 +103,8 @@ pub enum CostError {
     },
     #[error("device '{device}' at tp = {tp} needs a link for the tensor-parallel all-reduces")]
     NoLink { device: String, tp: u32 },
+    #[error("one sequence needs {need_bytes:.3e} KV bytes but the budget is {budget_bytes:.3e}")]
+    KvBudgetTooSmall { need_bytes: f64, budget_bytes: f64 },
 }
 
 fn device_flops_per_s(device: &Device, precision: Precision) -> Result<f64, CostError> {
@@ -158,18 +160,30 @@ pub fn prefill(
     new_tokens: u64,
     cached_prefix: u64,
 ) -> Result<Phase, CostError> {
+    prefill_batch(model, target, 1, new_tokens, cached_prefix)
+}
+
+/// Cost of prefilling `sequences` independent sequences of `new_tokens` each behind
+/// `cached_prefix` resident tokens.
+pub fn prefill_batch(
+    model: &ModelSpec,
+    target: &Target<'_>,
+    sequences: u64,
+    new_tokens: u64,
+    cached_prefix: u64,
+) -> Result<Phase, CostError> {
     let (device, eff) = (target.device, &target.eff);
     let tp = f64::from(target.tp.max(1));
     let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_prefill;
     let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
+    let seqs = sequences as f64;
     let n = new_tokens as f64;
     let linear_flops = 2.0 * model.active_params_per_token() as f64 * n;
-    let flops = linear_flops + attention_flops(model, new_tokens, cached_prefix);
+    let flops = seqs * (linear_flops + attention_flops(model, new_tokens, cached_prefix));
     let bytes = model.weight_bytes() as f64
-        + kv_bytes(model, cached_prefix) as f64
-        + model.kv_bytes_per_token() as f64 * n;
+        + seqs * (kv_bytes(model, cached_prefix) as f64 + model.kv_bytes_per_token() as f64 * n);
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
-    let comm = all_reduce_seconds(model, target, n)?;
+    let comm = all_reduce_seconds(model, target, seqs * n)?;
     Ok(Phase::new(
         flops,
         bytes,
@@ -206,6 +220,54 @@ pub fn decode_step(
         overhead,
         comm,
     ))
+}
+
+/// Offline throughput for one request shape at the throughput-optimal batch: every request has
+/// `isl` input and `osl` output tokens, the batch is prefilled together and then decodes `osl`
+/// steps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SteadyState {
+    pub batch: u64,
+    pub prefill_s: f64,
+    pub decode_s: f64,
+    pub output_tokens_per_s: f64,
+    /// `"compute"` or `"memory"`, from the decode phase.
+    pub bound: &'static str,
+}
+
+/// The [`SteadyState`] with the highest output rate over batches of 1 to `max_batch` whose KV for
+/// `isl + osl` tokens each fits in `kv_budget_bytes`. Decode runs at the midpoint context
+/// `isl + osl / 2`: KV reads and attention FLOPs are linear in context, so the midpoint gives the
+/// exact sum over the `osl` steps.
+pub fn max_throughput(
+    model: &ModelSpec,
+    target: &Target<'_>,
+    isl: u64,
+    osl: u64,
+    kv_budget_bytes: f64,
+    max_batch: u64,
+) -> Result<SteadyState, CostError> {
+    let per_sequence = kv_bytes(model, isl + osl) as f64;
+    let mut best: Option<SteadyState> = None;
+    for batch in (1..=max_batch).take_while(|&b| b as f64 * per_sequence <= kv_budget_bytes) {
+        let prefill_s = prefill_batch(model, target, batch, isl, 0)?.seconds;
+        let step = decode_step(model, target, isl + osl / 2, batch)?;
+        let decode_s = osl as f64 * step.seconds;
+        let output_tokens_per_s = (batch * osl) as f64 / (prefill_s + decode_s);
+        if best.is_none_or(|b| output_tokens_per_s > b.output_tokens_per_s) {
+            best = Some(SteadyState {
+                batch,
+                prefill_s,
+                decode_s,
+                output_tokens_per_s,
+                bound: step.bound(),
+            });
+        }
+    }
+    best.ok_or(CostError::KvBudgetTooSmall {
+        need_bytes: per_sequence,
+        budget_bytes: kv_budget_bytes,
+    })
 }
 
 /// Time to move `bytes` over a channel of `bw_gbps` GB/s with `latency_us` of latency.
@@ -312,6 +374,40 @@ mod tests {
         let mut swa = model.clone();
         swa.attention = agentforge_ir::AttentionKind::SlidingWindow { window: 128 };
         assert_eq!(kv_bytes(&swa, 119_000), 128 * 327_680);
+    }
+
+    #[test]
+    fn batched_prefill_attends_within_each_sequence() {
+        let model = ModelSpec::preset("llama-3.1-70b").unwrap();
+        let m = h200();
+        let t = on_nvlink(&m, 2);
+        let one = prefill(&model, &t, 4096, 0).unwrap();
+        assert_eq!(one, prefill_batch(&model, &t, 1, 4096, 0).unwrap());
+        let batch = prefill_batch(&model, &t, 8, 4096, 0).unwrap();
+        let joined = prefill(&model, &t, 8 * 4096, 0).unwrap();
+        assert!((batch.flops - 8.0 * one.flops).abs() < 1e-9 * batch.flops);
+        assert!(batch.flops < joined.flops);
+        assert!(batch.bytes < 8.0 * one.bytes);
+        assert_eq!(batch.comm_s, joined.comm_s);
+    }
+
+    #[test]
+    fn max_throughput_fills_the_kv_budget_up_to_the_batch_cap() {
+        let model = ModelSpec::preset("llama-3.1-70b").unwrap();
+        let m = h200();
+        let t = on_nvlink(&m, 2);
+        let per_sequence = kv_bytes(&model, 128 + 2048) as f64;
+        let ten = max_throughput(&model, &t, 128, 2048, 10.5 * per_sequence, 4096).unwrap();
+        assert_eq!(ten.batch, 10);
+        let capped = max_throughput(&model, &t, 128, 2048, 1e15, 64).unwrap();
+        assert_eq!(capped.batch, 64);
+        assert!(capped.output_tokens_per_s > ten.output_tokens_per_s);
+        let expected = (64 * 2048) as f64 / (capped.prefill_s + capped.decode_s);
+        assert!((capped.output_tokens_per_s - expected).abs() < 1e-9 * expected);
+        assert!(matches!(
+            max_throughput(&model, &t, 128, 2048, 0.5 * per_sequence, 4096),
+            Err(CostError::KvBudgetTooSmall { .. })
+        ));
     }
 
     #[test]
