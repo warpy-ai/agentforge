@@ -83,7 +83,8 @@ struct TargetArgs {
     /// Device name within the machine (default: the first device).
     #[arg(long)]
     device: Option<String>,
-    /// Tensor-parallel degree; device resources scale linearly.
+    /// Tensor-parallel degree; device resources scale linearly and all-reduces run over the
+    /// machine's fastest link.
     #[arg(long, default_value_t = 1)]
     tp: u32,
     /// Override the model's weight precision (fp16, bf16, fp8, mxfp4, nvfp4, ...).
@@ -247,6 +248,17 @@ fn resolve(target: &TargetArgs) -> Result<Resolved> {
     })
 }
 
+impl Resolved {
+    fn cost_target(&self, tp: u32) -> cost::Target<'_> {
+        cost::Target {
+            device: &self.machine.devices[self.device_index],
+            tp,
+            link: self.machine.fastest_link(),
+            eff: Efficiency::default(),
+        }
+    }
+}
+
 fn print_phase(label: &str, phase: &Phase) {
     println!("{label}");
     println!("  flops            {:.3e}", phase.flops);
@@ -254,6 +266,7 @@ fn print_phase(label: &str, phase: &Phase) {
     println!("  compute time     {:.4} s", phase.compute_s);
     println!("  memory time      {:.4} s", phase.memory_s);
     println!("  overhead         {:.4} s", phase.overhead_s);
+    println!("  communication    {:.4} s", phase.comm_s);
     println!(
         "  total            {:.4} s ({}-bound)",
         phase.seconds,
@@ -335,7 +348,6 @@ fn models(command: ModelsCommand) -> Result<()> {
 }
 
 fn cost_cmd(command: CostCommand) -> Result<()> {
-    let eff = Efficiency::default();
     match command {
         CostCommand::Prefill {
             target,
@@ -344,7 +356,7 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
         } => {
             let r = resolve(&target)?;
             let device = &r.machine.devices[r.device_index];
-            let phase = cost::prefill(&r.model, device, tokens, prefix, target.tp, &eff)?;
+            let phase = cost::prefill(&r.model, &r.cost_target(target.tp), tokens, prefix)?;
             print_phase(
                 &format!(
                     "prefill of {tokens} tokens behind {prefix} cached tokens: {} on {} x{}",
@@ -363,7 +375,7 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
         } => {
             let r = resolve(&target)?;
             let device = &r.machine.devices[r.device_index];
-            let phase = cost::decode_step(&r.model, device, context, batch, target.tp, &eff)?;
+            let phase = cost::decode_step(&r.model, &r.cost_target(target.tp), context, batch)?;
             print_phase(
                 &format!(
                     "decode step for {batch} sequences at {context} tokens: {} on {} x{}",
@@ -413,17 +425,14 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
             step_hint,
         } => {
             let r = resolve(&target)?;
-            let device = &r.machine.devices[r.device_index];
-            let eff = Efficiency::default();
+            let cost_target = r.cost_target(target.tp);
             let kv = cost::kv_bytes(&r.model, prefix_tokens) as f64;
-            let recompute = cost::prefill(&r.model, device, prefix_tokens, 0, target.tp, &eff)?;
+            let recompute = cost::prefill(&r.model, &cost_target, prefix_tokens, 0)?;
             let step_hint_s = match step_hint {
                 Some(s) => s,
                 None => {
-                    let step_prefill =
-                        cost::prefill(&r.model, device, 875, prefix_tokens, target.tp, &eff)?;
-                    let step_decode =
-                        cost::decode_step(&r.model, device, prefix_tokens, 4, target.tp, &eff)?;
+                    let step_prefill = cost::prefill(&r.model, &cost_target, 875, prefix_tokens)?;
+                    let step_decode = cost::decode_step(&r.model, &cost_target, prefix_tokens, 4)?;
                     step_prefill.seconds + 214.0 * step_decode.seconds
                 }
             };
@@ -508,7 +517,8 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
                     None => bail!("machine '{}' has no memory tiers", r.machine.name),
                 }
             }
-            let cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
+            let mut cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
+            cfg.link = r.machine.fastest_link().cloned();
             let trace_data = match &trace {
                 Some(path) => {
                     let text = fs::read_to_string(path)

@@ -245,6 +245,13 @@ impl Machine {
         self.tiers.iter().find(|t| t.name == name)
     }
 
+    /// The link with the highest bandwidth, if the machine has any links.
+    pub fn fastest_link(&self) -> Option<&Link> {
+        self.links
+            .iter()
+            .max_by(|a, b| a.bw_gbps.total_cmp(&b.bw_gbps))
+    }
+
     /// Tiers ordered shallow to deep by read bandwidth (fastest first).
     pub fn tiers_by_speed(&self) -> Vec<&MemoryTier> {
         let mut tiers: Vec<&MemoryTier> = self.tiers.iter().collect();
@@ -276,6 +283,15 @@ mod tests {
         // No FP4 units on Hopper: NVFP4 falls back to the FP8 rate.
         assert_eq!(d.tflops(Precision::Nvfp4), Some(1979.0));
         assert!(m.tier("host_dram").is_some());
+    }
+
+    #[test]
+    fn fastest_link_has_the_highest_bandwidth() {
+        let mut m = Machine::builtin("h200").unwrap();
+        m.links.reverse();
+        assert_eq!(m.fastest_link().map(|l| l.name.as_str()), Some("nvlink4"));
+        m.links.clear();
+        assert!(m.fastest_link().is_none());
     }
 
     #[test]

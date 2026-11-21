@@ -16,9 +16,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use agentforge_compile::ResidencyAction;
-use agentforge_cost::{self as cost, CostError, Efficiency};
+use agentforge_cost::{self as cost, CostError, Efficiency, Target};
 use agentforge_ir::ModelSpec;
-use agentforge_machine::{Device, MemoryTier};
+use agentforge_machine::{Device, Link, MemoryTier};
 
 use crate::policy::{Policy, PolicyContext, Victim};
 use crate::report::{mean, percentile, SimReport};
@@ -31,6 +31,8 @@ pub struct SimConfig {
     pub device: Device,
     pub tiers: Vec<MemoryTier>,
     pub tp: u32,
+    /// The link the tensor-parallel group all-reduces over; required when `tp > 1`.
+    pub link: Option<Link>,
     pub eff: Efficiency,
     /// Fraction of device memory reserved for activations and fragmentation.
     pub kv_reserve_fraction: f64,
@@ -43,8 +45,18 @@ impl SimConfig {
             device,
             tiers,
             tp: tp.max(1),
+            link: None,
             eff: Efficiency::default(),
             kv_reserve_fraction: 0.10,
+        }
+    }
+
+    fn target(&self) -> Target<'_> {
+        Target {
+            device: &self.device,
+            tp: self.tp,
+            link: self.link.as_ref(),
+            eff: self.eff,
         }
     }
 
@@ -224,16 +236,8 @@ impl<'a> Sim<'a> {
             .max()
             .unwrap_or(0)
             .max(1);
-        let prefill = cost::prefill(
-            &cfg.model,
-            &cfg.device,
-            875,
-            typical_prefix,
-            cfg.tp,
-            &cfg.eff,
-        )?;
-        let decode =
-            cost::decode_step(&cfg.model, &cfg.device, typical_prefix, 4, cfg.tp, &cfg.eff)?;
+        let prefill = cost::prefill(&cfg.model, &cfg.target(), 875, typical_prefix)?;
+        let decode = cost::decode_step(&cfg.model, &cfg.target(), typical_prefix, 4)?;
         let step_hint_s = prefill.seconds + 214.0 * decode.seconds;
         let sess = trace
             .sessions
@@ -310,15 +314,7 @@ impl<'a> Sim<'a> {
         if prefix_tokens == 0 {
             return Ok(0.0);
         }
-        Ok(cost::prefill(
-            &self.cfg.model,
-            &self.cfg.device,
-            prefix_tokens,
-            0,
-            self.cfg.tp,
-            &self.cfg.eff,
-        )?
-        .seconds)
+        Ok(cost::prefill(&self.cfg.model, &self.cfg.target(), prefix_tokens, 0)?.seconds)
     }
 
     fn decoders_active_at(&self, t: f64) -> usize {
@@ -524,14 +520,7 @@ impl<'a> Sim<'a> {
         self.sess[sid].kv_bytes = kv_after;
         self.sess[sid].state = KvState::OnDevice;
 
-        let phase = cost::prefill(
-            &cfg.model,
-            &cfg.device,
-            prefill_tokens,
-            cached,
-            cfg.tp,
-            &cfg.eff,
-        )?;
+        let phase = cost::prefill(&cfg.model, &cfg.target(), prefill_tokens, cached)?;
         let start = ready.max(self.dev.prefill_free_at);
         let first_token = start + phase.seconds;
         self.dev.prefill_free_at = first_token;
@@ -542,9 +531,7 @@ impl<'a> Sim<'a> {
 
         let batch = self.decoders_active_at(first_token) + 1;
         let ctx = prefix + new_tokens + out_tokens / 2;
-        let per_token =
-            cost::decode_step(&cfg.model, &cfg.device, ctx, batch as u64, cfg.tp, &cfg.eff)?
-                .seconds;
+        let per_token = cost::decode_step(&cfg.model, &cfg.target(), ctx, batch as u64)?.seconds;
         let duration = out_tokens as f64 * per_token;
         let done = first_token + duration;
         self.dev.decoders.push((sid, done));
@@ -730,7 +717,9 @@ mod tests {
         let mut model = ModelSpec::preset("llama-3.1-70b").unwrap();
         model.kv_precision = Precision::Fp8;
         let tiers = m.tiers.clone();
-        SimConfig::new(model, m.devices[0].clone(), tiers, 8)
+        let mut cfg = SimConfig::new(model, m.devices[0].clone(), tiers, 8);
+        cfg.link = m.fastest_link().cloned();
+        cfg
     }
 
     fn trace(sessions: u32, seed: u64) -> Trace {
