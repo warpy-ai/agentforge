@@ -110,8 +110,8 @@ export const layers: {
     id: 'L5',
     name: 'Cost model and simulator',
     crate: 'agentforge-cost · agentforge-sim',
-    role: 'Roofline-style phase costs for prefill, decode and transfers, and a discrete-event replay of agent sessions over the machine description.',
-    status: 'baseline',
+    role: 'Per-operator roofline costs for prefill, decode, tensor-parallel communication and transfers, calibrated within 12 percent of published TensorRT-LLM throughput, and a discrete-event replay of agent sessions with prefill/decode interference, a scheduled transfer channel, admission control and loaders for the FreeInference and TraceLab traces.',
+    status: 'calibrated',
   },
   {
     id: 'L6',
@@ -151,46 +151,43 @@ export const results = {
     ['Model', 'llama-3.1-70b · FP8 weights · FP8 KV'],
     ['Machine', 'h200-sxm ×8 · 945 GB KV budget · 2 TB host tier'],
     ['Trace', '80 synthetic coding-agent sessions · 1719 steps · seed 11'],
-    ['Policies', 'lru (reactive, device until pressure) vs plan (program-aware)'],
+    ['Policies', 'lru (reactive, device until pressure) vs plan (program-aware); write-through in the design doc'],
   ],
-  // Regime D, seed 11. Bars are indexed to the LRU value.
+  // Regime D, seed 11, after the M1 simulator changes (TTFT counts memory waits, prefill stalls
+  // decode). Bars are indexed to the LRU value.
   rows: [
-    { metric: 'TTFT p90', unit: 's', lru: 33.224, plan: 22.96, fmt: 1 },
-    { metric: 'Step latency p90', unit: 's', lru: 36.35, plan: 27.82, fmt: 1 },
-    { metric: 'Foreground KV wait', unit: 's', lru: 20.4, plan: 16.5, fmt: 1 },
-    { metric: 'Pressure evictions', unit: '', lru: 188, plan: 114, fmt: 0 },
-    { metric: 'TTFT mean', unit: 's', lru: 8.398, plan: 8.298, fmt: 2 },
+    { metric: 'Pressure evictions', unit: '', lru: 230, plan: 140, fmt: 0 },
+    { metric: 'Step latency p90', unit: 's', lru: 37.86, plan: 34.4, fmt: 1 },
+    { metric: 'TTFT p99', unit: 's', lru: 222.672, plan: 187.275, fmt: 1 },
+    { metric: 'Foreground KV wait', unit: 's', lru: 23.3, plan: 20.6, fmt: 1 },
+    { metric: 'TTFT mean', unit: 's', lru: 8.456, plan: 8.625, fmt: 2 },
   ],
   table: [
-    ['TTFT mean (s)', '8.398', '8.298'],
-    ['TTFT p50 (s)', '0.063', '0.063'],
-    ['TTFT p90 (s)', '33.224', '22.960'],
-    ['TTFT p99 (s)', '112.230', '113.058'],
-    ['Step latency p50 (s)', '1.71', '1.73'],
-    ['Step latency p90 (s)', '36.35', '27.82'],
-    ['Step latency p99 (s)', '113.82', '115.43'],
-    ['Foreground KV wait (s)', '20.4', '16.5'],
-    ['Fetched in foreground (GB)', '3726', '3681'],
-    ['Prefetched (GB)', '0', '3777'],
-    ['Spilled during waits (GB)', '0', '5229'],
-    ['Pressure evictions', '188', '114'],
-    ['Capacity waits', '1954', '2107'],
-    ['Device busy (s)', '1716.2', '1710.5'],
-    ['Makespan (s)', '5725.7', '5727.1'],
+    ['TTFT mean (s)', '8.456', '8.625'],
+    ['TTFT p50 (s)', '0.092', '0.092'],
+    ['TTFT p90 (s)', '1.189', '3.997'],
+    ['TTFT p99 (s)', '222.672', '187.275'],
+    ['Step latency p50 (s)', '3.60', '3.54'],
+    ['Step latency p90 (s)', '37.86', '34.40'],
+    ['Foreground KV wait (s)', '23.3', '20.6'],
+    ['Prefetched (GB)', '0', '3531'],
+    ['Pressure evictions', '230', '140'],
+    ['Capacity waits', '3232', '3395'],
+    ['Makespan (s)', '6007.2', '6005.7'],
   ],
-  seeds: 'Seed sweep (1, 11, 23, 42): pressure evictions fall 30 to 40 percent in every seed; foreground KV waits fall in three of four; p90 TTFT improves in two of four.',
+  seeds: 'Seed sweep (1, 11, 23, 42), M1 simulator: pressure evictions fall 25 to 39 percent in every seed; p90 step latency and foreground KV waits fall in every seed; p99 TTFT improves in three of four; p90 TTFT in two of four.',
   readings: [
     {
       tag: 'Where it holds',
-      body: 'With a fast, large host tier the plan cuts pressure evictions by 30 to 40 percent in every seed and lowers foreground KV waits in three of four. The information doing the work is which tool the agent called: a policy that only saw the blended wait distribution lost to LRU.',
+      body: 'With a fast, large host tier the plan evicts 25 to 39 percent less than LRU in every seed and has the lowest p90 step latency in every seed. The information doing the work is which tool the agent called: a policy that only saw the blended wait distribution lost to LRU.',
     },
     {
       tag: 'What it does not fix',
-      body: 'Mean TTFT barely moves in any pressured regime, because the dominant cost is queueing for device memory. No residency policy changes how much KV the active sessions need; admission control, smaller KV and placement onto bigger devices do.',
+      body: 'Mean TTFT is within 0.6 s across all three policies in every seed, because queueing for device memory and the cold-start prefill queue dominate it. A write-through baseline, which copies KV to the host during every wait so evictions write nothing, has the lowest foreground KV wait in every pressured regime.',
     },
     {
       tag: 'Where it loses',
-      body: 'With scarce, slow tiers (a 128 GB host tier, NVMe writing at 24 GB/s) every extra transfer competes for one channel. The plan saturates it and loses to LRU, which is why channel-aware planning is the first M1 item.',
+      body: 'With a scarce, slow host tier (128 GB) the plan loses to both baselines: its spill writes delay other sessions\' foreground fetches, and the planner does not yet price that. The channel-backlog rule added in M1 never changed a decision in these regimes.',
     },
   ],
   // First-order arithmetic for the median step on a 70B grouped-query model, FP16 KV.
@@ -302,8 +299,9 @@ latency_us = 20
 
 [[links]]
 name = "nvlink4"
-bw_gbps = 900
-latency_us = 2`;
+bw_gbps = 450
+latency_us = 2
+notes = "Per direction per GPU. NVIDIA quotes 900 GB/s as the bidirectional total."`;
 
 export const quickstart = [
   { comment: 'build every crate', cmd: 'cargo build --workspace' },
@@ -318,8 +316,12 @@ export const quickstart = [
     cmd: 'cargo run -p agentforge-cli -- plan residency --machine h200 --tp 8 --prefix-tokens 119000 --wait-median 45',
   },
   {
-    comment: 'replay 64 synthetic sessions and compare both policies',
-    cmd: 'cargo run -p agentforge-cli -- sim run --model llama-3.1-70b --machine h200 --tp 8 --sessions 64 --steps 20 --policy both --seed 1',
+    comment: 'replay 64 synthetic sessions and compare the three policies',
+    cmd: 'cargo run -p agentforge-cli -- sim run --model llama-3.1-70b --machine h200 --tp 8 --sessions 64 --steps 20 --policy all --seed 1',
+  },
+  {
+    comment: 'check the cost model against published TensorRT-LLM throughput',
+    cmd: 'cargo run --release -p agentforge-cli -- cost calibrate',
   },
 ];
 
@@ -330,23 +332,23 @@ export const roadmap = [
     when: '2026-10',
     scope: 'Research notes and report, design doc, Cargo workspace with IR, machine model, cost model, compiler passes, trace simulator, runtime traits, CLI.',
     done: 'cargo test, clippy and fmt pass; sim run compares LRU and program-aware residency.',
-    status: 'current',
+    status: 'done',
   },
   {
     id: 'M1',
     title: 'Simulator validation',
-    when: 'next',
-    scope: 'FreeInference and TraceLab trace loaders, calibration against GenZ and LLMCompass, TP interference, channel-aware residency, write-through baseline, admission control.',
-    done: 'Simulated TTFT and throughput within 15 percent of published measurements for Llama 3.1 70B on H200 and B200.',
-    status: 'planned',
+    when: '2026-11',
+    scope: 'FreeInference and TraceLab trace loaders, calibration against published TensorRT-LLM throughput, TP communication and prefill/decode interference, channel-aware residency, write-through baseline, admission control.',
+    done: 'Throughput within 12.1 percent of 33 published rows for the Llama 3.1 70B architecture on H200, B200 and H100; the H200 and B200 fit predicts H100 out of sample.',
+    status: 'done',
   },
   {
     id: 'M2',
     title: 'CPU backend',
-    when: 'planned',
+    when: 'next',
     scope: 'Tile IR to Cranelift for a tiny transformer; reference numerics for FP8, MXFP4, NVFP4.',
     done: 'A 2-layer model runs end to end, bit-exact against the reference.',
-    status: 'planned',
+    status: 'current',
   },
   {
     id: 'M3',
