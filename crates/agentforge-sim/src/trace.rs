@@ -95,6 +95,9 @@ pub struct SyntheticConfig {
     pub initial_prefix_median: u64,
     pub initial_prefix_sigma: f64,
     pub max_initial_prefix: u64,
+    /// A session ends before the step that would grow its context past this many tokens, the
+    /// way a harness compacts or stops at the model's window.
+    pub max_context_tokens: u64,
     pub new_tokens_sigma: f64,
     pub output_tokens_sigma: f64,
     pub seed: u64,
@@ -110,6 +113,7 @@ impl Default for SyntheticConfig {
             initial_prefix_median: 110_000,
             initial_prefix_sigma: 0.45,
             max_initial_prefix: 400_000,
+            max_context_tokens: 1_000_000,
             new_tokens_sigma: 0.6,
             output_tokens_sigma: 0.7,
             seed: 1,
@@ -165,7 +169,7 @@ pub fn synthesize(program: &AgentProgram, cfg: &SyntheticConfig) -> Trace {
     let mut sessions = Vec::with_capacity(cfg.sessions as usize);
     for id in 0..cfg.sessions {
         t += rng.exponential(1.0 / cfg.arrival_rate_per_s.max(1e-9));
-        let initial_prefix_tokens = if cfg.initial_prefix_median == 0 {
+        let mut initial_prefix_tokens = if cfg.initial_prefix_median == 0 {
             program.prefix_tokens()
         } else {
             let sampled = rng
@@ -183,7 +187,8 @@ pub fn synthesize(program: &AgentProgram, cfg: &SyntheticConfig) -> Trace {
             }
         };
         let mut step_id = program.entry;
-        let mut steps = Vec::with_capacity(n_steps as usize);
+        let mut steps: Vec<TraceStep> = Vec::with_capacity(n_steps as usize);
+        let mut context = initial_prefix_tokens;
         for i in 0..n_steps {
             let Some(step) = program.step(step_id) else {
                 break;
@@ -196,6 +201,22 @@ pub fn synthesize(program: &AgentProgram, cfg: &SyntheticConfig) -> Trace {
                 .lognormal(step.output_tokens.max(1) as f64, cfg.output_tokens_sigma)
                 .round()
                 .max(8.0) as u64;
+            if context + new_tokens + output_tokens > cfg.max_context_tokens {
+                match steps.last_mut() {
+                    Some(previous) => {
+                        previous.tool = None;
+                        break;
+                    }
+                    None => {
+                        initial_prefix_tokens = cfg
+                            .max_context_tokens
+                            .saturating_sub(new_tokens + output_tokens)
+                            .min(initial_prefix_tokens);
+                        context = initial_prefix_tokens;
+                    }
+                }
+            }
+            context += new_tokens + output_tokens;
             let last = i + 1 == n_steps;
             let tool = if last {
                 None
@@ -297,6 +318,26 @@ mod tests {
         lengths.sort_unstable();
         let median = lengths[lengths.len() / 2];
         assert!((8..=30).contains(&median), "median steps {median}");
+        let longest_context = a
+            .sessions
+            .iter()
+            .map(|s| {
+                s.initial_prefix_tokens
+                    + s.steps
+                        .iter()
+                        .map(|st| st.new_tokens + st.output_tokens)
+                        .sum::<u64>()
+            })
+            .max()
+            .unwrap();
+        assert!(
+            longest_context <= cfg.max_context_tokens,
+            "{longest_context}"
+        );
+        assert!(
+            longest_context > 500_000,
+            "the cap should bind in the tail: {longest_context}"
+        );
     }
 
     #[test]
