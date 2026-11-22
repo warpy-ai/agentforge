@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use agentforge_compile::{kv_liveness, place, plan_residency, ResidencyAction, TierBudget};
+use agentforge_compile::{
+    kv_liveness, place, plan_residency, DeviceState, ResidencyAction, TierBudget,
+};
 use agentforge_cost::{self as cost, Efficiency, Phase};
 use agentforge_ir::{AgentProgram, LatencyModel, ModelSpec, Precision};
 use agentforge_machine::Machine;
@@ -194,6 +196,11 @@ enum SimCommand {
         /// Let decode run at full speed during a prefill instead of stalling for its duration.
         #[arg(long)]
         decode_overlaps_prefill: bool,
+        /// Admit a new session only while the device KV in use, its own included, stays within
+        /// this fraction (0 to 1] of the KV budget; later sessions queue in arrival order.
+        /// Every session is admitted on arrival when omitted.
+        #[arg(long)]
+        admit_fraction: Option<f64>,
         /// Print reports as JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -463,8 +470,11 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
                 &budgets,
                 target.tp,
                 recompute.seconds,
-                pressure,
-                step_hint_s,
+                DeviceState {
+                    pressure,
+                    step_hint_s,
+                    channel_backlog_s: 0.0,
+                },
             );
             println!("KV for {prefix_tokens} tokens: {:.1} GB", kv / 1e9);
             println!("recompute: {:.2} s", d.recompute_s);
@@ -519,8 +529,15 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             save_trace,
             host_gb,
             decode_overlaps_prefill,
+            admit_fraction,
             json,
         } => {
+            if let Some(f) = admit_fraction {
+                let valid = f > 0.0 && f <= 1.0;
+                if !valid {
+                    bail!("--admit-fraction must be in (0, 1], got {f}");
+                }
+            }
             let r = resolve(&target)?;
             let device = r.machine.devices[r.device_index].clone();
             let mut tiers = r.machine.tiers.clone();
@@ -533,6 +550,7 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             let mut cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
             cfg.link = r.machine.fastest_link().cloned();
             cfg.prefill_stalls_decode = !decode_overlaps_prefill;
+            cfg.admit_fraction = admit_fraction;
             let trace_data = match &trace {
                 Some(path) => {
                     let text = fs::read_to_string(path)

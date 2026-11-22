@@ -80,6 +80,18 @@ pub struct TierBudget<'a> {
     pub free_bytes: f64,
 }
 
+/// The device's state when a residency decision is made.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeviceState {
+    /// How full the device KV budget is, in `0..=1`.
+    pub pressure: f64,
+    /// Typical duration of a step on this device, the shortest time for which freed memory can
+    /// be of use to anyone else.
+    pub step_hint_s: f64,
+    /// How long the transfer channel is already booked; a write started now queues behind it.
+    pub channel_backlog_s: f64,
+}
+
 struct Candidate {
     index: usize,
     fetch_s: f64,
@@ -90,20 +102,20 @@ struct Candidate {
 /// Plan the residency of `kv_bytes` of KV cache across a tool wait described by `wait`.
 ///
 /// `tiers` are ordered shallow to deep; `tp` scales tier bandwidth (one link per device);
-/// `recompute_s` is the cost of rebuilding the KV from scratch; `pressure` in `0..=1` is how
-/// full the device KV budget is; `step_hint_s` is the typical duration of a step on this
-/// device, the shortest time for which freed memory can be of use to anyone else.
+/// `recompute_s` is the cost of rebuilding the KV from scratch. A spill is only planned when
+/// its write, queued behind the channel backlog, lands inside the median wait.
 pub fn plan_residency(
     kv_bytes: f64,
     wait: &LatencyModel,
     tiers: &[TierBudget<'_>],
     tp: u32,
     recompute_s: f64,
-    pressure: f64,
-    step_hint_s: f64,
+    device: DeviceState,
 ) -> ResidencyDecision {
     let tp = f64::from(tp.max(1));
-    let pressure = pressure.clamp(0.0, 1.0);
+    let pressure = device.pressure.clamp(0.0, 1.0);
+    let step_hint_s = device.step_hint_s;
+    let backlog_s = device.channel_backlog_s.max(0.0);
     let p20 = wait.quantile(0.2);
     let p50 = wait.quantile(0.5);
     let candidates: Vec<Candidate> = tiers
@@ -156,26 +168,35 @@ pub fn plan_residency(
             shallow_fetch.min(recompute_s)
         ));
     }
-    // 3. A tier whose write hides inside the median wait and whose fetch hides inside the p20
-    //    wait: spill now, prefetch before the early return.
+    // 3. A tier whose write, behind the channel backlog, hides inside the median wait and whose
+    //    fetch hides inside the p20 wait: spill now, prefetch before the early return.
+    let lands_in_time = |c: &Candidate| c.write_s + backlog_s <= p50;
     if let Some(c) = candidates
         .iter()
-        .find(|c| c.fits && c.fetch_s <= p20 && c.write_s <= p50)
+        .find(|c| c.fits && c.fetch_s <= p20 && lands_in_time(c))
     {
         return spill(
             c,
             format!(
-                "pressure {pressure:.2}; write {:.2}s fits in the median wait {p50:.2}s and fetch {:.2}s fits in the p20 wait {p20:.2}s",
+                "pressure {pressure:.2}; write {:.2}s behind a {backlog_s:.2}s channel backlog fits in the median wait {p50:.2}s and fetch {:.2}s fits in the p20 wait {p20:.2}s",
                 c.write_s, c.fetch_s
             ),
         );
     }
-    // 4. Otherwise the shallowest tier with room, even if the fetch may be exposed.
-    if let Some(c) = candidates.iter().find(|c| c.fits) {
+    // 4. Otherwise the shallowest tier with room whose write lands inside the median wait, even
+    //    if the fetch may be exposed; when the backlog keeps every write from landing in time,
+    //    a spill would only queue more traffic, so keep.
+    if let Some(c) = candidates.iter().find(|c| c.fits && lands_in_time(c)) {
         return spill(
             c,
-            format!("pressure {pressure:.2}; shallowest tier with room"),
+            format!("pressure {pressure:.2}; shallowest tier with room whose write lands in the median wait"),
         );
+    }
+    if let Some(c) = candidates.iter().find(|c| c.fits) {
+        return keep(format!(
+            "write {:.2}s behind a {backlog_s:.2}s channel backlog would land after the median wait {p50:.2}s",
+            c.write_s
+        ));
     }
     // 5. No room anywhere: drop when recompute is cheaper than holding memory for the wait.
     if recompute_s < p50 {
@@ -276,6 +297,14 @@ mod tests {
     use super::*;
     use agentforge_machine::Machine;
 
+    fn device(pressure: f64) -> DeviceState {
+        DeviceState {
+            pressure,
+            step_hint_s: 1.2,
+            channel_backlog_s: 0.0,
+        }
+    }
+
     fn host_and_nvme(machine: &Machine) -> Vec<TierBudget<'_>> {
         machine
             .tiers
@@ -296,7 +325,7 @@ mod tests {
             sigma: 0.8,
         };
         for pressure in [0.1, 0.9] {
-            let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, pressure, 1.2);
+            let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, device(pressure));
             assert_eq!(d.action, ResidencyAction::Keep, "{}", d.rationale);
         }
     }
@@ -309,7 +338,7 @@ mod tests {
             median_s: 600.0,
             sigma: 0.7,
         };
-        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, 0.2, 1.2);
+        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, device(0.2));
         assert_eq!(d.action, ResidencyAction::Keep, "{}", d.rationale);
     }
 
@@ -321,7 +350,7 @@ mod tests {
             median_s: 45.0,
             sigma: 0.7,
         };
-        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, 0.9, 1.2);
+        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, device(0.9));
         match d.action {
             ResidencyAction::Spill {
                 tier_index,
@@ -337,6 +366,39 @@ mod tests {
             }
             other => panic!("expected a spill, got {other:?}: {}", d.rationale),
         }
+    }
+
+    #[test]
+    fn channel_backlog_keeps_kv_whose_write_would_land_after_the_wait() {
+        let m = Machine::builtin("h200").unwrap();
+        let tiers = host_and_nvme(&m);
+        let wait = LatencyModel::LogNormal {
+            median_s: 45.0,
+            sigma: 0.7,
+        };
+        let with_backlog = |channel_backlog_s| {
+            plan_residency(
+                38e9,
+                &wait,
+                &tiers,
+                8,
+                7.0,
+                DeviceState {
+                    channel_backlog_s,
+                    ..device(0.9)
+                },
+            )
+        };
+        let idle = with_backlog(0.0);
+        let short = with_backlog(30.0);
+        let long = with_backlog(60.0);
+        assert!(
+            matches!(idle.action, ResidencyAction::Spill { tier_index: 0, .. }),
+            "{}",
+            idle.rationale
+        );
+        assert_eq!(short.action, idle.action, "{}", short.rationale);
+        assert_eq!(long.action, ResidencyAction::Keep, "{}", long.rationale);
     }
 
     #[test]
@@ -358,7 +420,7 @@ mod tests {
             median_s: 180.0,
             sigma: 1.0,
         };
-        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, 0.9, 1.2);
+        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, device(0.9));
         match d.action {
             ResidencyAction::Spill { ref tier, .. } => assert_eq!(tier, "nvme"),
             other => panic!("expected an nvme spill, got {other:?}: {}", d.rationale),
@@ -380,7 +442,7 @@ mod tests {
             median_s: 120.0,
             sigma: 0.5,
         };
-        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, 0.95, 1.2);
+        let d = plan_residency(38e9, &wait, &tiers, 8, 7.0, device(0.95));
         assert_eq!(d.action, ResidencyAction::Drop, "{}", d.rationale);
     }
 

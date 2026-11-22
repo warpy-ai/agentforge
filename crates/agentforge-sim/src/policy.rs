@@ -1,6 +1,6 @@
 //! KV residency policies compared by the simulator.
 
-use agentforge_compile::{plan_residency, ResidencyAction, TierBudget};
+use agentforge_compile::{plan_residency, DeviceState, ResidencyAction, TierBudget};
 use agentforge_ir::LatencyModel;
 use agentforge_machine::MemoryTier;
 
@@ -16,6 +16,8 @@ pub struct PolicyContext<'a> {
     pub recompute_s: f64,
     /// Typical prefill-plus-decode duration of a step on this device.
     pub step_hint_s: f64,
+    /// How long the transfer channel is already booked; a transfer started now queues behind it.
+    pub channel_backlog_s: f64,
 }
 
 /// An idle session whose KV could be evicted.
@@ -142,8 +144,11 @@ impl Policy for Plan {
             &budgets,
             cx.tp,
             cx.recompute_s,
-            pressure,
-            cx.step_hint_s,
+            DeviceState {
+                pressure,
+                step_hint_s: cx.step_hint_s,
+                channel_backlog_s: cx.channel_backlog_s,
+            },
         )
         .action
     }
@@ -182,6 +187,7 @@ mod tests {
                 device_capacity: 945e9,
                 recompute_s: 7.0,
                 step_hint_s: 1.5,
+                channel_backlog_s: 0.0,
             };
             WriteThrough.on_tool_call(&cx, kv, mirrored, &wait)
         };

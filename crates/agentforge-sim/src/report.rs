@@ -29,7 +29,10 @@ pub struct SimReport {
     pub evicted_drops: u64,
     pub planned_drops: u64,
     pub capacity_waits: u64,
+    pub sessions_queued: u64,
+    pub admission_wait_s: f64,
     pub prefetch_skipped: u64,
+    pub prefetch_late: u64,
     pub decode_stall_s: f64,
     pub device_busy_s: f64,
     pub prefill_tokens: u64,
@@ -213,10 +216,31 @@ pub fn render_table(reports: &[SimReport]) -> String {
                 .collect(),
         ),
         (
+            "sessions queued at admission",
+            reports
+                .iter()
+                .map(|r| r.sessions_queued.to_string())
+                .collect(),
+        ),
+        (
+            "admission wait (s)",
+            reports
+                .iter()
+                .map(|r| format!("{:.1}", r.admission_wait_s))
+                .collect(),
+        ),
+        (
             "prefetches skipped",
             reports
                 .iter()
                 .map(|r| r.prefetch_skipped.to_string())
+                .collect(),
+        ),
+        (
+            "prefetches refused as late",
+            reports
+                .iter()
+                .map(|r| r.prefetch_late.to_string())
                 .collect(),
         ),
         (

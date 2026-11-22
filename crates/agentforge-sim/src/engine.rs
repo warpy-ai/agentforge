@@ -4,7 +4,10 @@
 //! device, decode is batched (per-token time from the cost model with the batch size at the
 //! start of the decode), and one transfer channel per device group moves KV between the device
 //! and the tiers. By default a prefill stalls every decode running when it starts for its whole
-//! duration (see [`SimConfig::prefill_stalls_decode`]). Session KV lives in one of: device
+//! duration (see [`SimConfig::prefill_stalls_decode`]). New sessions can be held at an
+//! admission gate ([`SimConfig::admit_fraction`]). The transfer channel serves transfers in the
+//! order they are issued, so a prefetch is issued only when, behind what the channel already
+//! carries, it lands before the session's predicted return. Session KV lives in one of: device
 //! memory, device memory mirrored (a write-through copy has landed the first part of it in a
 //! tier, so evicting it writes only the rest), a tier, in flight back to the device, or nowhere
 //! (dropped, which forces a prefix recompute on the next step).
@@ -17,7 +20,7 @@
 //! the copies during every wait instead.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 
 use agentforge_compile::ResidencyAction;
 use agentforge_cost::{self as cost, CostError, Efficiency, Target};
@@ -45,6 +48,11 @@ pub struct SimConfig {
     /// of the prefill's duration; the decode batch's KV reads do not slow a compute-bound
     /// prefill, so the prefill keeps its own duration either way.
     pub prefill_stalls_decode: bool,
+    /// Admission gate for new sessions: a session's first step starts only while the device KV
+    /// in use, its own included, stays within this fraction of the KV budget, or once the
+    /// device holds no KV at all. Until then the session waits in arrival order and the wait
+    /// counts in its TTFT. `None` admits every session on arrival.
+    pub admit_fraction: Option<f64>,
 }
 
 impl SimConfig {
@@ -58,6 +66,7 @@ impl SimConfig {
             eff: Efficiency::default(),
             kv_reserve_fraction: 0.10,
             prefill_stalls_decode: true,
+            admit_fraction: None,
         }
     }
 
@@ -118,6 +127,9 @@ enum KvState {
 
 #[derive(Debug, Clone, Copy)]
 enum Event {
+    SessionArrival {
+        sid: usize,
+    },
     StepArrival {
         sid: usize,
     },
@@ -182,7 +194,6 @@ struct Sess {
     done: bool,
     copying: bool,
     step_arrival: f64,
-    prefetch_retries: u32,
 }
 
 struct DevState {
@@ -209,7 +220,10 @@ struct Metrics {
     evicted_drops: u64,
     planned_drops: u64,
     capacity_waits: u64,
+    sessions_queued: u64,
+    admission_wait_s: f64,
     prefetch_skipped: u64,
+    prefetch_late: u64,
     decode_stall_s: f64,
     device_busy_s: f64,
     prefill_tokens: u64,
@@ -231,6 +245,7 @@ struct Sim<'a> {
     sess: Vec<Sess>,
     dev: DevState,
     tier_used: Vec<f64>,
+    admit_queue: VecDeque<usize>,
     events: BinaryHeap<Timed>,
     seq: u64,
     m: Metrics,
@@ -274,7 +289,6 @@ impl<'a> Sim<'a> {
                 done: s.steps.is_empty(),
                 copying: false,
                 step_arrival: s.arrival_s,
-                prefetch_retries: 0,
             })
             .collect();
         let mut sim = Sim {
@@ -290,6 +304,7 @@ impl<'a> Sim<'a> {
                 decoders: Vec::new(),
             },
             tier_used: vec![0.0; cfg.tiers.len()],
+            admit_queue: VecDeque::new(),
             events: BinaryHeap::new(),
             seq: 0,
             m: Metrics::default(),
@@ -297,7 +312,7 @@ impl<'a> Sim<'a> {
         };
         for (sid, s) in trace.sessions.iter().enumerate() {
             if !s.steps.is_empty() {
-                sim.push(s.arrival_s, Event::StepArrival { sid });
+                sim.push(s.arrival_s, Event::SessionArrival { sid });
             }
         }
         Ok(sim)
@@ -428,6 +443,7 @@ impl<'a> Sim<'a> {
         while let Some(Timed { t, ev, .. }) = self.events.pop() {
             self.m.makespan = self.m.makespan.max(t);
             match ev {
+                Event::SessionArrival { sid } => self.on_session_arrival(sid, t)?,
                 Event::StepArrival { sid } => self.on_arrival(sid, t)?,
                 Event::DecodeDone { sid } => self.on_decode_done(sid, t)?,
                 Event::CopyDone {
@@ -439,6 +455,38 @@ impl<'a> Sim<'a> {
                 } => self.on_copy_done(sid, gen, tier, bytes, release),
                 Event::PrefetchDue { sid, gen } => self.on_prefetch_due(sid, gen, t),
             }
+            self.admit_queued(t)?;
+        }
+        Ok(())
+    }
+
+    fn admissible(&self, sid: usize) -> bool {
+        let Some(fraction) = self.cfg.admit_fraction else {
+            return true;
+        };
+        let step = &self.trace.sessions[sid].steps[0];
+        let need =
+            self.kv_bytes_for(self.sess[sid].prefix_tokens + step.new_tokens + step.output_tokens);
+        self.dev.kv_used <= 0.0 || self.dev.kv_used + need <= fraction * self.dev.kv_capacity
+    }
+
+    fn on_session_arrival(&mut self, sid: usize, now: f64) -> Result<(), SimError> {
+        if self.admit_queue.is_empty() && self.admissible(sid) {
+            return self.on_arrival(sid, now);
+        }
+        self.admit_queue.push_back(sid);
+        self.m.sessions_queued += 1;
+        Ok(())
+    }
+
+    fn admit_queued(&mut self, now: f64) -> Result<(), SimError> {
+        while let Some(&sid) = self.admit_queue.front() {
+            if !self.admissible(sid) {
+                break;
+            }
+            self.admit_queue.pop_front();
+            self.m.admission_wait_s += now - self.sess[sid].step_arrival;
+            self.on_arrival(sid, now)?;
         }
         Ok(())
     }
@@ -485,6 +533,7 @@ impl<'a> Sim<'a> {
                 device_capacity: self.dev.kv_capacity,
                 recompute_s,
                 step_hint_s: self.step_hint_s,
+                channel_backlog_s: (self.dev.transfer_free_at - now).max(0.0),
             };
             policy.rank_victims(&cx, &mut victims);
         }
@@ -696,6 +745,7 @@ impl<'a> Sim<'a> {
                 device_capacity: self.dev.kv_capacity,
                 recompute_s,
                 step_hint_s: self.step_hint_s,
+                channel_backlog_s: (self.dev.transfer_free_at - now).max(0.0),
             };
             policy.on_tool_call(&cx, kv, mirrored_bytes, &tw.latency)
         };
@@ -714,7 +764,6 @@ impl<'a> Sim<'a> {
                 ..
             } => {
                 if let Some(lands) = self.start_copy(sid, tier_index, now, true, return_at) {
-                    self.sess[sid].prefetch_retries = 0;
                     let gen = self.sess[sid].gen;
                     // Prefetch so the KV is back before the 10th-percentile return.
                     let due = (now + tw.latency.quantile(0.1) - prefetch_lead_s).max(lands + 1e-6);
@@ -753,22 +802,26 @@ impl<'a> Sim<'a> {
         let KvState::OnTier(i) = s.state else {
             return;
         };
-        let bytes = s.kv_bytes;
+        let (bytes, predicted_return) = (s.kv_bytes, s.predicted_return);
+        let tier = &cfg.tiers[i];
+        let dur = self.transfer(bytes, tier.read_bw_gbps, tier.latency_us);
+        let lands = now.max(self.dev.transfer_free_at) + dur;
+        if lands > predicted_return {
+            self.m.prefetch_late += 1;
+            return;
+        }
         // Leave headroom for arrivals; a prefetch that fills the device only gets evicted again.
         if self.dev.kv_used + bytes <= 0.9 * self.dev.kv_capacity {
-            let tier = &cfg.tiers[i];
-            let start = now.max(self.dev.transfer_free_at);
-            let dur = self.transfer(bytes, tier.read_bw_gbps, tier.latency_us);
-            self.dev.transfer_free_at = start + dur;
+            self.dev.transfer_free_at = lands;
             self.dev.kv_used += bytes;
             self.tier_used[i] -= bytes;
-            self.sess[sid].state = KvState::InFlight {
-                ready_at: start + dur,
-            };
+            self.sess[sid].state = KvState::InFlight { ready_at: lands };
             self.m.prefetched_bytes += bytes;
-        } else if self.sess[sid].prefetch_retries < 200 && now < self.sess[sid].predicted_return {
-            self.sess[sid].prefetch_retries += 1;
-            self.push(now + 1.0, Event::PrefetchDue { sid, gen });
+            return;
+        }
+        let retry_at = self.dev.transfer_free_at.max(now + 1.0);
+        if retry_at + dur <= predicted_return {
+            self.push(retry_at, Event::PrefetchDue { sid, gen });
         } else {
             self.m.prefetch_skipped += 1;
         }
@@ -800,7 +853,10 @@ impl<'a> Sim<'a> {
             evicted_drops: self.m.evicted_drops,
             planned_drops: self.m.planned_drops,
             capacity_waits: self.m.capacity_waits,
+            sessions_queued: self.m.sessions_queued,
+            admission_wait_s: self.m.admission_wait_s,
             prefetch_skipped: self.m.prefetch_skipped,
+            prefetch_late: self.m.prefetch_late,
             decode_stall_s: self.m.decode_stall_s,
             device_busy_s: self.m.device_busy_s,
             prefill_tokens: self.m.prefill_tokens,
@@ -977,6 +1033,32 @@ mod tests {
             "write-through {:.1}s vs lru {:.1}s",
             wt.foreground_kv_wait_s,
             lru.foreground_kv_wait_s
+        );
+    }
+
+    #[test]
+    fn admission_gate_queues_new_sessions_instead_of_crowding_the_device() {
+        let mut cfg = pressure_config();
+        let t = trace(80, 11);
+        let open = run(&cfg, &t, &Lru).unwrap();
+        cfg.admit_fraction = Some(0.7);
+        let gated = run(&cfg, &t, &Lru).unwrap();
+        assert_eq!(open.sessions_queued, 0);
+        assert_eq!(open.admission_wait_s, 0.0);
+        assert_eq!(gated.sessions_done, gated.sessions);
+        assert_eq!(gated.steps, t.total_steps());
+        assert!(gated.sessions_queued > 0);
+        assert!(
+            gated.capacity_waits < open.capacity_waits,
+            "gated {} vs open {}",
+            gated.capacity_waits,
+            open.capacity_waits
+        );
+        let ttft_sum = gated.ttft_mean_s * gated.steps as f64;
+        assert!(
+            ttft_sum >= gated.admission_wait_s,
+            "TTFT sum {ttft_sum:.1}s vs admission wait {:.1}s",
+            gated.admission_wait_s
         );
     }
 
