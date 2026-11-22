@@ -175,7 +175,7 @@ export const results = {
     ['Capacity waits', '3232', '3395'],
     ['Makespan (s)', '6007.2', '6005.7'],
   ],
-  seeds: 'Seed sweep (1, 11, 23, 42), M1 simulator: pressure evictions fall 25 to 39 percent in every seed; p90 step latency and foreground KV waits fall in every seed; p99 TTFT improves in three of four; p90 TTFT in two of four.',
+  seeds: 'Seed sweep (1, 11, 23, 42), M1 simulator: pressure evictions fall 25 to 39 percent in every seed; p90 step latency and foreground KV waits fall in every seed; p90 and p99 TTFT improve in three of four.',
   readings: [
     {
       tag: 'Where it holds',
@@ -339,7 +339,7 @@ export const roadmap = [
     title: 'Simulator validation',
     when: '2026-11',
     scope: 'FreeInference and TraceLab trace loaders, calibration against published TensorRT-LLM throughput, TP communication and prefill/decode interference, channel-aware residency, write-through baseline, admission control.',
-    done: 'Throughput within 12.1 percent of 33 published rows for the Llama 3.1 70B architecture on H200, B200 and H100; the H200 and B200 fit predicts H100 out of sample.',
+    done: 'Throughput within 12.2 percent of 33 published rows for the Llama 3.1 70B architecture on H200, B200 and H100; the H200 and B200 fit predicts H100 out of sample.',
     status: 'done',
   },
   {

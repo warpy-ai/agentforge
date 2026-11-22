@@ -83,16 +83,16 @@ predicts and prefetches before the predicted return). After the M1 fixes, which 
 spent waiting for device memory in TTFT and let prefills stall running decodes:
 
 - with FP8 KV and a 2 TB host tier the plan evicts 25 to 39 percent less than LRU under pressure
-  in every seed, has the lowest p90 step latency in every seed, and beats LRU's p99 TTFT in
-  three of four seeds;
-- write-through has the lowest foreground KV wait in every pressured regime, and the plan's p90
-  TTFT beats LRU in only two of four seeds; mean TTFT is within 0.6 s across all three policies,
-  because queueing for device memory and the prefill queue dominate it;
+  in every seed, has the lowest p90 step latency in every seed, and beats LRU's p90 and p99 TTFT
+  in three of four seeds each;
+- write-through has the lowest foreground KV wait in every pressured regime; mean TTFT is within
+  0.6 s across all three policies, because queueing for device memory and the prefill queue
+  dominate it;
 - with a scarce, slow host tier the plan loses to both baselines: its spill writes delay other
   sessions' foreground fetches, and the planner does not yet price that.
 
 The cost model behind the simulator predicts 33 published TensorRT-LLM throughput rows (Llama
-3.3 70B on H200, B200 and H100) within 12.1 percent, and the knobs fitted on H200 and B200 alone
+3.3 70B on H200, B200 and H100) within 12.2 percent, and the knobs fitted on H200 and B200 alone
 predict the H100 rows within 12.2 percent. Tables, seeds and the reading of the results are in
 the design document's "M1 simulator validation" section; `scripts/m1-regimes.sh` reproduces them.
 

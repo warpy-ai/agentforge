@@ -934,8 +934,8 @@ mod tests {
             plan.spill_gb > 0.0,
             "the plan should spill during long waits"
         );
-        // The robust effect across seeds is fewer pressure evictions (30 to 40 percent fewer in
-        // the M0 sweep); foreground waits and tail latency improve in most seeds but not all.
+        // The robust effect across seeds is fewer pressure evictions (25 to 39 percent fewer in
+        // the M1 sweep); foreground waits and tail latency improve in most seeds but not all.
         assert!(
             plan.evictions < lru.evictions,
             "plan {} vs lru {}",
