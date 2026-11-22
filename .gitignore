@@ -26,3 +26,4 @@ rustc-ice-*.txt
 # macOS AppleDouble metadata files (repo lives on an exFAT volume)
 ._*
 .DS_Store
+.audit/

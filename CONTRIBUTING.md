@@ -25,6 +25,19 @@ table in `crates/agentforge-machine/src/lib.rs`, and cite every number in `sourc
 device memory and GB/s for tiers and links. A link's `bw_gbps` is what one device sends in one
 direction; halve a vendor's bidirectional total and say so in `notes`.
 
+## Adding calibration rows
+
+Published throughput measurements live in `crates/agentforge-cost/calibration/*.toml`, one row
+per request shape with the source URL, retrieval date and metric in the header. Add rows for a
+bundled machine and model preset, then run `cargo run --release -p agentforge-cli -- cost
+calibrate` to see each row's error and `--fit` to re-grid the `Efficiency` defaults; the test
+`published_throughput_rows_within_15_percent` pins the bound.
+
+## Reproducing the simulation tables
+
+`scripts/m1-regimes.sh` replays the design doc's four regimes and the TraceLab-shaped workload
+with every policy and prints the tables; `docs/design/m1-regimes-2026-11-22.md` is its output.
+
 ## Adding a model preset
 
 Extend `ModelSpec::preset` in `crates/agentforge-ir/src/model.rs`. Use the published total and
