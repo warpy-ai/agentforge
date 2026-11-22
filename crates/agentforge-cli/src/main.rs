@@ -15,8 +15,8 @@ use agentforge_cost::{self as cost, Efficiency, Phase};
 use agentforge_ir::{AgentProgram, LatencyModel, ModelSpec, Precision};
 use agentforge_machine::Machine;
 use agentforge_sim::{
-    render_table, run, synthesize, Lru, Plan, Policy, SimConfig, SimReport, SyntheticConfig, Trace,
-    WriteThrough,
+    load_trace, render_table, run, synthesize, Lru, Plan, Policy, SimConfig, SimReport, StepCount,
+    SyntheticConfig, TraceFormat, WriteThrough,
 };
 
 #[derive(Parser)]
@@ -164,6 +164,25 @@ enum PlanCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TraceFormatChoice {
+    /// One `Session` per line, as written by `--save-trace`.
+    Native,
+    /// The FreeInference agentic trace (Harvard), decompressed to JSONL.
+    Freeinference,
+    /// The TraceLab coding trace (UW SyFI), decompressed to JSONL.
+    Tracelab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProgramChoice {
+    /// The default coding-agent loop (20k stable prefix, three tool arms).
+    CodingDefault,
+    /// The TraceLab-published step, session-length and wait distributions; `--steps`,
+    /// `--prefix-median` and `--prefix-sigma` are ignored.
+    Tracelab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PolicyChoice {
     Lru,
     WriteThrough,
@@ -199,9 +218,15 @@ enum SimCommand {
         policy: PolicyChoice,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Synthetic workload to sample from.
+        #[arg(long, value_enum, default_value_t = ProgramChoice::CodingDefault)]
+        program: ProgramChoice,
         /// Replay a JSONL trace instead of synthesizing one.
         #[arg(long)]
         trace: Option<PathBuf>,
+        /// Layout of the file given to --trace.
+        #[arg(long, value_enum, default_value_t = TraceFormatChoice::Native)]
+        trace_format: TraceFormatChoice,
         /// Save the trace that was run as JSONL.
         #[arg(long)]
         save_trace: Option<PathBuf>,
@@ -587,7 +612,9 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             prefix_sigma,
             policy,
             seed,
+            program,
             trace,
+            trace_format,
             save_trace,
             host_gb,
             decode_overlaps_prefill,
@@ -617,21 +644,46 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
                 Some(path) => {
                     let text = fs::read_to_string(path)
                         .with_context(|| format!("reading trace {}", path.display()))?;
-                    Trace::from_jsonl(&text)
-                        .with_context(|| format!("parsing trace {}", path.display()))?
+                    let format = match trace_format {
+                        TraceFormatChoice::Native => TraceFormat::Native,
+                        TraceFormatChoice::Freeinference => TraceFormat::FreeInference,
+                        TraceFormatChoice::Tracelab => TraceFormat::TraceLab,
+                    };
+                    let (loaded, summary) = load_trace(&text, format)
+                        .with_context(|| format!("parsing trace {}", path.display()))?;
+                    eprintln!(
+                        "loaded {} sessions ({} recorded, {} splits at context shrinks), {} steps, {} lines skipped",
+                        summary.sessions_out,
+                        summary.sessions_in,
+                        summary.splits,
+                        summary.steps,
+                        summary.skipped_lines
+                    );
+                    loaded
                 }
-                None => synthesize(
-                    &AgentProgram::coding_agent_default(),
-                    &SyntheticConfig {
-                        sessions,
-                        steps: agentforge_sim::StepCount::Geometric { mean: steps },
-                        arrival_rate_per_s: arrival_rate,
-                        initial_prefix_median: prefix_median,
-                        initial_prefix_sigma: prefix_sigma,
-                        seed,
-                        ..Default::default()
-                    },
-                ),
+                None => match program {
+                    ProgramChoice::CodingDefault => synthesize(
+                        &AgentProgram::coding_agent_default(),
+                        &SyntheticConfig {
+                            sessions,
+                            steps: StepCount::Geometric { mean: steps },
+                            arrival_rate_per_s: arrival_rate,
+                            initial_prefix_median: prefix_median,
+                            initial_prefix_sigma: prefix_sigma,
+                            seed,
+                            ..Default::default()
+                        },
+                    ),
+                    ProgramChoice::Tracelab => synthesize(
+                        &AgentProgram::tracelab_coding_agent(),
+                        &SyntheticConfig {
+                            sessions,
+                            arrival_rate_per_s: arrival_rate,
+                            seed,
+                            ..SyntheticConfig::tracelab()
+                        },
+                    ),
+                },
             };
             if let Some(path) = &save_trace {
                 fs::write(path, trace_data.to_jsonl()?)
