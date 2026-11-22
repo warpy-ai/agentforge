@@ -67,6 +67,15 @@ impl Calibration {
         toml::from_str(text)
     }
 
+    /// The same calibration restricted to the rows `keep` accepts, for fitting on some rows and
+    /// evaluating the rest as a holdout.
+    pub fn filter(&self, keep: impl Fn(&CalibrationRow) -> bool) -> Calibration {
+        Calibration {
+            rows: self.rows.iter().filter(|row| keep(row)).cloned().collect(),
+            ..self.clone()
+        }
+    }
+
     /// Predict every row with `eff`, reserving `reserve_fraction` of device memory for
     /// activations and the runtime, and sweeping batches up to `max_batch`.
     pub fn evaluate(
@@ -126,6 +135,7 @@ pub fn geomean_abs_error(results: &[RowResult]) -> f64 {
 /// pin it.
 pub const FIT_MFU_PREFILL: (f64, f64) = (0.30, 0.80);
 pub const FIT_MFU_DECODE: (f64, f64) = (0.20, 0.80);
+pub const FIT_FP4_MFU_SCALE: (f64, f64) = (0.50, 1.00);
 pub const FIT_BW_UTIL: (f64, f64) = (0.60, 0.95);
 pub const FIT_STEP: f64 = 0.05;
 pub const FIT_PER_LAYER_OVERHEAD_S: [f64; 4] = [5e-6, 1e-5, 2e-5, 4e-5];
@@ -145,18 +155,22 @@ pub fn fit(
     let mut best: Option<(Efficiency, f64)> = None;
     for mfu_prefill in grid(FIT_MFU_PREFILL) {
         for mfu_decode in grid(FIT_MFU_DECODE) {
-            for bw_util in grid(FIT_BW_UTIL) {
-                for per_layer_overhead_s in FIT_PER_LAYER_OVERHEAD_S {
-                    let eff = Efficiency {
-                        mfu_prefill,
-                        mfu_decode,
-                        bw_util,
-                        per_layer_overhead_s,
-                        link_util,
-                    };
-                    let error = max_abs_error(&cal.evaluate(&eff, reserve_fraction, max_batch)?);
-                    if best.is_none_or(|(_, e)| error < e) {
-                        best = Some((eff, error));
+            for fp4_mfu_scale in grid(FIT_FP4_MFU_SCALE) {
+                for bw_util in grid(FIT_BW_UTIL) {
+                    for per_layer_overhead_s in FIT_PER_LAYER_OVERHEAD_S {
+                        let eff = Efficiency {
+                            mfu_prefill,
+                            mfu_decode,
+                            fp4_mfu_scale,
+                            bw_util,
+                            per_layer_overhead_s,
+                            link_util,
+                        };
+                        let results = cal.evaluate(&eff, reserve_fraction, max_batch)?;
+                        let error = max_abs_error(&results);
+                        if best.is_none_or(|(_, e)| error < e) {
+                            best = Some((eff, error));
+                        }
                     }
                 }
             }
@@ -180,19 +194,50 @@ mod tests {
         assert!(cal.rows.iter().all(|r| r.kv_precision == Precision::Fp8));
     }
 
-    /// Pinned at 25 percent, not M1's 15: the fitted defaults reach 24.5 percent at worst and a
-    /// geometric mean of 14.0 percent. The worst row is H200 FP8 TP 2 at 128/128 (-24.5 percent),
-    /// traded against B200 NVFP4 TP 1 at 500/2000 (+23.6 percent): every H200 row is predicted
-    /// low and every B200 row high. Fitted alone, each device lands within 13 percent, so the
-    /// suspected missing mechanism is precision efficiency: NVFP4 GEMMs on B200 reach a smaller
-    /// fraction of their 9000 TFLOPS peak than FP8 GEMMs on H200 reach of theirs, and one shared
-    /// set of knobs cannot express that.
+    /// M1's bar. The fitted defaults reach 12.1 percent at worst and a geometric mean of 5.3
+    /// percent over the 33 rows; per device the worst rows are H100 128/4096 (-12.1 percent),
+    /// B200 128/128 (-12.1) and H200 1000/2000 (-11.6). Every device's errors straddle zero:
+    /// before `fp4_mfu_scale`, one shared set of knobs left every H200 row low and every B200 row
+    /// high, and the best joint fit was 24.5 percent.
     #[test]
-    fn published_throughput_rows_within_25_percent() -> Result<(), CalibrationError> {
+    fn published_throughput_rows_within_15_percent() -> Result<(), CalibrationError> {
         let results = Calibration::builtin().evaluate(&Efficiency::default(), 0.10, 2048)?;
+        assert_eq!(results.len(), 33);
         assert!(results.iter().all(|r| r.predicted.batch >= 1));
         let worst = max_abs_error(&results);
-        assert!(worst <= 0.25, "max |error| {worst}");
+        assert!(worst <= 0.15, "max |error| {worst}");
+        Ok(())
+    }
+
+    /// The grid point [`fit`] picks on the 22 H200 and B200 rows alone, from
+    /// `fit(&Calibration::builtin().filter(|r| r.machine != "h100"), 0.10, 2048)` (about 80 s in
+    /// release). It is the point the 33-row fit picks too: the H100 rows did not move it.
+    const H200_B200_FIT: Efficiency = Efficiency {
+        mfu_prefill: 0.6,
+        mfu_decode: 0.4,
+        fp4_mfu_scale: 0.65,
+        bw_util: 0.6,
+        per_layer_overhead_s: 4e-5,
+        link_util: 0.75,
+    };
+
+    /// Out of sample: knobs fitted without any H100 row predict all eleven within 12.1 percent
+    /// (worst 128/4096 at -12.1 percent), so the H200's FP8 efficiencies carry to the H100 through
+    /// its bandwidth and capacity alone.
+    #[test]
+    fn h200_b200_fit_transfers_to_h100_within_15_percent() -> Result<(), CalibrationError> {
+        let h100 = Calibration::builtin().filter(|row| row.machine == "h100");
+        assert_eq!(h100.rows.len(), 11);
+        let worst = max_abs_error(&h100.evaluate(&H200_B200_FIT, 0.10, 2048)?);
+        assert!(worst <= 0.15, "max |error| {worst}");
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "searches the whole fit grid, about 80 s in release"]
+    fn h200_b200_fit_reproduces_the_stored_knobs() -> Result<(), CalibrationError> {
+        let rows = Calibration::builtin().filter(|row| row.machine != "h100");
+        assert_eq!(fit(&rows, 0.10, 2048)?.0, H200_B200_FIT);
         Ok(())
     }
 

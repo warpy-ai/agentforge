@@ -7,7 +7,7 @@
 //! compute and bandwidth linearly and adds two ring all-reduces of the activations per layer over
 //! the scale-up link.
 
-use agentforge_ir::{ModelSpec, Precision};
+use agentforge_ir::{ModelSpec, Precision, Scalar};
 use agentforge_machine::{Device, Link};
 
 pub mod calibration;
@@ -20,6 +20,12 @@ pub struct Efficiency {
     pub mfu_prefill: f64,
     /// Fraction of peak compute reached by decode GEMVs and small-batch GEMMs.
     pub mfu_decode: f64,
+    /// Fraction of the 4-bit tensor-core peak that block-scaled FP4 GEMMs reach, relative to what
+    /// 8-bit GEMMs reach of theirs. Applied to the compute rate when the weight element type is
+    /// the 4-bit E2M1 (MXFP4, NVFP4). Fitted; the published rows cannot separate it from a
+    /// Blackwell-wide derate because no B200 FP8 row exists on the same page, so read it as
+    /// "Blackwell FP4 reaches this share of its paper peak".
+    pub fp4_mfu_scale: f64,
     /// Fraction of peak memory bandwidth reached by streaming kernels.
     pub bw_util: f64,
     /// Fixed overhead per layer per phase (kernel launches, synchronization).
@@ -33,10 +39,11 @@ pub struct Efficiency {
 impl Default for Efficiency {
     fn default() -> Self {
         Efficiency {
-            mfu_prefill: 0.5,
-            mfu_decode: 0.3,
+            mfu_prefill: 0.6,
+            mfu_decode: 0.4,
+            fp4_mfu_scale: 0.65,
             bw_util: 0.6,
-            per_layer_overhead_s: 2e-5,
+            per_layer_overhead_s: 4e-5,
             link_util: 0.75,
         }
     }
@@ -80,16 +87,46 @@ struct Work {
     bytes: f64,
 }
 
+#[derive(Clone, Copy)]
+struct Rates {
+    gemm_flops_per_s: f64,
+    attention_flops_per_s: f64,
+    bytes_per_s: f64,
+}
+
+impl Rates {
+    fn new(model: &ModelSpec, target: &Target<'_>, mfu: f64) -> Result<Rates, CostError> {
+        let (device, eff) = (target.device, &target.eff);
+        let precision = model.weight_precision;
+        let tp = f64::from(target.tp.max(1));
+        let peak = device
+            .tflops(precision)
+            .ok_or_else(|| CostError::NoCompute {
+                device: device.name.clone(),
+                precision,
+            })?
+            * 1e12;
+        let flops_per_s = peak * tp * mfu;
+        let fp4_scale = if precision.scalar() == Scalar::F4E2M1 {
+            eff.fp4_mfu_scale
+        } else {
+            1.0
+        };
+        Ok(Rates {
+            gemm_flops_per_s: flops_per_s * fp4_scale,
+            attention_flops_per_s: flops_per_s,
+            bytes_per_s: device.memory_bw_bytes_per_s() * tp * eff.bw_util,
+        })
+    }
+}
+
 impl Phase {
-    fn new(
-        dense: Work,
-        attention: Work,
-        flops_per_s: f64,
-        bytes_per_s: f64,
-        overhead_s: f64,
-        comm_s: f64,
-    ) -> Phase {
-        let parts = [dense, attention].map(|w| (w.flops / flops_per_s, w.bytes / bytes_per_s));
+    fn new(dense: Work, attention: Work, rates: Rates, overhead_s: f64, comm_s: f64) -> Phase {
+        let parts = [
+            (dense, rates.gemm_flops_per_s),
+            (attention, rates.attention_flops_per_s),
+        ]
+        .map(|(w, flops_per_s)| (w.flops / flops_per_s, w.bytes / rates.bytes_per_s));
         let on_compute: f64 = parts.iter().filter(|(c, m)| c >= m).map(|(c, _)| c).sum();
         let on_memory: f64 = parts.iter().filter(|(c, m)| c < m).map(|(_, m)| m).sum();
         Phase {
@@ -125,16 +162,6 @@ pub enum CostError {
     NoLink { device: String, tp: u32 },
     #[error("one sequence needs {need_bytes:.3e} KV bytes but the budget is {budget_bytes:.3e}")]
     KvBudgetTooSmall { need_bytes: f64, budget_bytes: f64 },
-}
-
-fn device_flops_per_s(device: &Device, precision: Precision) -> Result<f64, CostError> {
-    device
-        .tflops(precision)
-        .map(|t| t * 1e12)
-        .ok_or_else(|| CostError::NoCompute {
-            device: device.name.clone(),
-            precision,
-        })
 }
 
 fn all_reduce_seconds(
@@ -192,10 +219,8 @@ pub fn prefill_batch(
     new_tokens: u64,
     cached_prefix: u64,
 ) -> Result<Phase, CostError> {
-    let (device, eff) = (target.device, &target.eff);
-    let tp = f64::from(target.tp.max(1));
-    let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_prefill;
-    let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
+    let eff = &target.eff;
+    let rates = Rates::new(model, target, eff.mfu_prefill)?;
     let seqs = sequences as f64;
     let n = new_tokens as f64;
     let dense = Work {
@@ -209,14 +234,7 @@ pub fn prefill_batch(
     };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
     let comm = all_reduce_seconds(model, target, seqs * n)?;
-    Ok(Phase::new(
-        dense,
-        attention,
-        flops_per_s,
-        bytes_per_s,
-        overhead,
-        comm,
-    ))
+    Ok(Phase::new(dense, attention, rates, overhead, comm))
 }
 
 /// Cost of one decode step (one token per sequence) for `batch` sequences at `context_tokens`.
@@ -226,11 +244,9 @@ pub fn decode_step(
     context_tokens: u64,
     batch: u64,
 ) -> Result<Phase, CostError> {
-    let (device, eff) = (target.device, &target.eff);
-    let tp = f64::from(target.tp.max(1));
+    let eff = &target.eff;
     let batch = batch.max(1) as f64;
-    let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_decode;
-    let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
+    let rates = Rates::new(model, target, eff.mfu_decode)?;
     let dense = Work {
         flops: batch * 2.0 * model.active_params_per_token() as f64,
         bytes: model.weight_bytes() as f64,
@@ -241,14 +257,7 @@ pub fn decode_step(
     };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
     let comm = all_reduce_seconds(model, target, batch)?;
-    Ok(Phase::new(
-        dense,
-        attention,
-        flops_per_s,
-        bytes_per_s,
-        overhead,
-        comm,
-    ))
+    Ok(Phase::new(dense, attention, rates, overhead, comm))
 }
 
 /// Offline throughput for one request shape at the throughput-optimal batch: every request has
@@ -444,6 +453,32 @@ mod tests {
         let s = transfer_seconds(38e9, 400.0, 0.0);
         assert!((s - 0.095).abs() < 1e-9);
         assert!(transfer_seconds(1.0, 0.0, 0.0).is_infinite());
+    }
+
+    #[test]
+    fn fp4_mfu_scale_slows_only_fp4_gemms() {
+        let m = Machine::builtin("b200").unwrap();
+        let at = |fp4_mfu_scale| Target {
+            device: &m.devices[0],
+            tp: 1,
+            link: None,
+            eff: Efficiency {
+                fp4_mfu_scale,
+                ..Efficiency::default()
+            },
+        };
+        let mut model = ModelSpec::preset("llama-3.1-70b").unwrap();
+        model.weight_precision = Precision::Nvfp4;
+        let full = prefill(&model, &at(1.0), 8192, 0).unwrap();
+        let half = prefill(&model, &at(0.5), 8192, 0).unwrap();
+        let gemm_flops = 2.0 * model.active_params_per_token() as f64 * 8192.0;
+        let gemm_s = gemm_flops / (9000e12 * Efficiency::default().mfu_prefill);
+        assert!((half.compute_s - full.compute_s - gemm_s).abs() < 1e-9 * gemm_s);
+        model.weight_precision = Precision::Fp8;
+        assert_eq!(
+            prefill(&model, &at(0.5), 8192, 0).unwrap(),
+            prefill(&model, &at(1.0), 8192, 0).unwrap()
+        );
     }
 
     #[test]
