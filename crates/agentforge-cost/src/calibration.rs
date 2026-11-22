@@ -55,7 +55,7 @@ pub enum CalibrationError {
 }
 
 impl Calibration {
-    /// The bundled TensorRT-LLM rows for Llama 3.3 70B on H200 and B200.
+    /// The 33 bundled TensorRT-LLM rows for Llama 3.3 70B: FP8 on H100 and H200, NVFP4 on B200.
     pub fn builtin() -> Calibration {
         Calibration::from_toml(include_str!(
             "../calibration/trtllm-perf-overview-2025-09-15.toml"
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn builtin_rows_parse() {
         let cal = Calibration::builtin();
-        assert_eq!(cal.rows.len(), 22);
+        assert_eq!(cal.rows.len(), 33);
         assert!(cal
             .rows
             .iter()
