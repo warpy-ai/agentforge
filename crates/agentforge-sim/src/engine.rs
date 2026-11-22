@@ -594,10 +594,10 @@ impl<'a> Sim<'a> {
             KvState::OnDevice | KvState::Mirrored { .. } | KvState::InFlight { .. }
         );
         let need = if resident { kv_new } else { kv_prefix + kv_new };
-        if need > self.dev.kv_capacity {
+        if kv_after > self.dev.kv_capacity {
             return Err(SimError::SessionTooLarge {
                 session: self.trace.sessions[sid].id,
-                need_gb: need / 1e9,
+                need_gb: kv_after / 1e9,
                 capacity_gb: self.dev.kv_capacity / 1e9,
             });
         }
@@ -868,8 +868,8 @@ impl<'a> Sim<'a> {
 mod tests {
     use super::*;
     use crate::policy::{Lru, Plan, WriteThrough};
-    use crate::trace::{synthesize, Session, SyntheticConfig, TraceStep};
-    use agentforge_ir::{AgentProgram, Precision};
+    use crate::trace::{synthesize, Session, SyntheticConfig, ToolWait, TraceStep};
+    use agentforge_ir::{AgentProgram, LatencyModel, Precision};
     use agentforge_machine::Machine;
 
     /// Llama 3.1 70B with FP8 KV on eight H200s: 80 sessions with 110k-token median prefixes
@@ -1059,6 +1059,37 @@ mod tests {
             "TTFT sum {ttft_sum:.1}s vs admission wait {:.1}s",
             gated.admission_wait_s
         );
+    }
+
+    /// A session whose context outgrows the KV budget cannot run even with the device to
+    /// itself; the engine must say so instead of retrying forever once nothing else is left to
+    /// evict.
+    #[test]
+    fn session_that_outgrows_the_kv_budget_is_an_error() {
+        let cfg = pressure_config();
+        let per_token = cfg.model.kv_bytes_per_token() as f64;
+        let fits = (0.6 * cfg.kv_capacity_bytes() / per_token) as u64;
+        let step = |new_tokens| TraceStep {
+            new_tokens,
+            output_tokens: 8,
+            tool: Some(ToolWait {
+                name: "read".to_string(),
+                wait_s: 1.0,
+                latency: LatencyModel::Fixed { seconds: 1.0 },
+            }),
+        };
+        let t = Trace {
+            sessions: vec![Session {
+                id: 7,
+                arrival_s: 0.0,
+                initial_prefix_tokens: 0,
+                steps: vec![step(fits), step(fits), step(1)],
+            }],
+        };
+        match run(&cfg, &t, &Lru) {
+            Err(SimError::SessionTooLarge { session: 7, .. }) => {}
+            other => panic!("expected SessionTooLarge, got {other:?}"),
+        }
     }
 
     #[test]
