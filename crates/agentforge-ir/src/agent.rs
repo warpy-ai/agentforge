@@ -348,48 +348,94 @@ impl AgentProgram {
     /// step, and a choice between fast tools (reads, edits, short commands), long-running tools
     /// (builds, test suites) and human turns, each with its own latency model.
     pub fn coding_agent_default() -> AgentProgram {
-        let arm = |probability: f64, name: &str, median_s: f64, sigma: f64| ToolArm {
-            probability,
-            call: ToolCall {
-                name: name.to_string(),
-                latency: LatencyModel::LogNormal { median_s, sigma },
-                result_tokens: 0,
-            },
-            then: 0,
-        };
-        AgentProgram {
-            name: "coding-agent-default".to_string(),
-            prefix: vec![
-                PromptBlock {
-                    kind: BlockKind::System,
-                    tokens: 3_000,
-                    stable: true,
-                },
-                PromptBlock {
-                    kind: BlockKind::Tools,
-                    tokens: 6_000,
-                    stable: true,
-                },
-                PromptBlock {
-                    kind: BlockKind::History,
-                    tokens: 11_000,
-                    stable: true,
-                },
+        coding_loop(
+            "coding-agent-default",
+            &[
+                arm(0.75, "read_or_edit", 1.5, 0.8),
+                arm(0.15, "build_or_test", 45.0, 0.7),
+                arm(0.10, "human_turn", 180.0, 1.0),
             ],
-            steps: vec![Step {
-                id: 0,
-                new_input_tokens: 875,
-                output_tokens: 214,
-                transition: Transition::ToolChoice {
-                    arms: vec![
-                        arm(0.75, "read_or_edit", 1.5, 0.8),
-                        arm(0.15, "build_or_test", 45.0, 0.7),
-                        arm(0.10, "human_turn", 180.0, 1.0),
-                    ],
-                },
-            }],
-            entry: 0,
-        }
+        )
+    }
+
+    /// The coding-agent loop with the per-step waits published in TraceLab (arXiv 2606.30560
+    /// v2, read 2026-11-21). Table 7 gives tool execution per step at p50 0.1 s, p90 10 s and
+    /// p99 192 s, and individual human-thinking waits at p50 84 s and p90 1,236 s; Table 2
+    /// gives 8.9 user-initiated steps out of 82.5 per session, so 10.8 percent of steps end in
+    /// a human turn. Table 8 gives the per-step append median of 875 tokens and output median
+    /// of 214 tokens.
+    pub fn tracelab_coding_agent() -> AgentProgram {
+        coding_loop(
+            "tracelab-coding-agent",
+            &[
+                arm(0.742, "fast_tool", 0.08, 1.6),
+                arm(0.15, "slow_tool", 12.0, 1.3),
+                arm(0.108, "human_turn", 84.0, 1.9),
+            ],
+        )
+    }
+}
+
+/// One tool the loop may call after a step, with a log-normal wait.
+struct LoopArm {
+    probability: f64,
+    tool: &'static str,
+    median_s: f64,
+    sigma: f64,
+}
+
+const fn arm(probability: f64, tool: &'static str, median_s: f64, sigma: f64) -> LoopArm {
+    LoopArm {
+        probability,
+        tool,
+        median_s,
+        sigma,
+    }
+}
+
+fn coding_loop(name: &str, arms: &[LoopArm]) -> AgentProgram {
+    AgentProgram {
+        name: name.to_string(),
+        prefix: vec![
+            PromptBlock {
+                kind: BlockKind::System,
+                tokens: 3_000,
+                stable: true,
+            },
+            PromptBlock {
+                kind: BlockKind::Tools,
+                tokens: 6_000,
+                stable: true,
+            },
+            PromptBlock {
+                kind: BlockKind::History,
+                tokens: 11_000,
+                stable: true,
+            },
+        ],
+        steps: vec![Step {
+            id: 0,
+            new_input_tokens: 875,
+            output_tokens: 214,
+            transition: Transition::ToolChoice {
+                arms: arms
+                    .iter()
+                    .map(|a| ToolArm {
+                        probability: a.probability,
+                        call: ToolCall {
+                            name: a.tool.to_string(),
+                            latency: LatencyModel::LogNormal {
+                                median_s: a.median_s,
+                                sigma: a.sigma,
+                            },
+                            result_tokens: 0,
+                        },
+                        then: 0,
+                    })
+                    .collect(),
+            },
+        }],
+        entry: 0,
     }
 }
 
@@ -420,6 +466,36 @@ mod tests {
         assert!(q50 > 1.0 && q50 < 10.0, "median {q50}");
         assert!(q90 > 30.0, "p90 {q90}");
         assert!((blended.cdf(q50) - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tracelab_waits_are_within_a_factor_of_the_published_quantiles() {
+        let p = AgentProgram::tracelab_coding_agent();
+        let Transition::ToolChoice { arms } = &p.steps[0].transition else {
+            panic!("the TraceLab program chooses between tools");
+        };
+        let (human, tools): (Vec<ToolArm>, Vec<ToolArm>) = arms
+            .iter()
+            .cloned()
+            .partition(|a| a.call.name == "human_turn");
+        let tool_wait = Transition::ToolChoice { arms: tools }
+            .blended_latency()
+            .unwrap();
+        let human_wait = Transition::ToolChoice { arms: human }
+            .blended_latency()
+            .unwrap();
+        let within = |model: &LatencyModel, q: f64, published: f64| {
+            let v = model.quantile(q);
+            assert!(
+                v < 2.5 * published && published < 2.5 * v,
+                "quantile {q}: {v} against the published {published}"
+            );
+        };
+        within(&tool_wait, 0.5, 0.1);
+        within(&tool_wait, 0.9, 10.0);
+        within(&tool_wait, 0.99, 192.0);
+        within(&human_wait, 0.5, 84.0);
+        within(&human_wait, 0.9, 1_236.0);
     }
 
     #[test]

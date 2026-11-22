@@ -44,11 +44,14 @@ Layers, top to bottom:
 4. **Machine model (`agentforge-machine`).** TOML descriptions: devices with class, compute per
    precision, memory capacity and bandwidth, on-chip SRAM and its bandwidth, transcendental
    throughput; memory tiers (host DRAM, NVMe, remote pools) with capacity, read and write bandwidth
-   and latency; links. Bundled: `h200`, `b200`, `mi355x`, `blackhole-p150`, `lpx-tier`.
-5. **Cost model and simulator (`agentforge-cost`, `agentforge-sim`).** Roofline-style phase
-   costs for prefill, decode and transfers, and a discrete-event replay of agent sessions over the
-   machine description. The same files drive the compiler, so every policy is testable before
-   silicon.
+   and latency; links. Bundled: `h100`, `h200`, `b200`, `mi355x`, `blackhole-p150`, `lpx-tier`.
+5. **Cost model and simulator (`agentforge-cost`, `agentforge-sim`).** Per-operator roofline
+   costs for prefill, decode and transfers (dense projections and attention as separate kernels,
+   tensor-parallel all-reduces on the critical path), calibrated against published TensorRT-LLM
+   throughput, and a discrete-event replay of agent sessions over the machine description with
+   prefill/decode interference, a scheduled transfer channel and admission control. Recorded
+   FreeInference and TraceLab traces replay through loaders. The same files drive the compiler,
+   so every policy is testable before silicon.
 6. **Compiler passes (`agentforge-compile`).** KV liveness, residency planning (Belady-style
    cost comparison over tiers), prefill/decode placement; e-graph rewrites of the model graph and
    tile programs come next.
@@ -91,6 +94,10 @@ With a 4 to 5 percent miss rate the misses dominate tail latency. Continuum meas
 from a runtime heuristic; compile-time knowledge should match it and extends to placement.
 
 ### First simulation results
+
+Superseded in part by "M1 simulator validation" below: the TTFT and step-latency rows in this
+section exclude time spent waiting for device memory, and the cost defaults have since been
+recalibrated, so the M1 tables are the ones to quote.
 
 Setup (milestone M0): `agentforge sim run` replays synthetic coding-agent sessions shaped like
 the TraceLab measurements (110k-token median initial prefix, 875 appended and 214 generated
@@ -265,16 +272,104 @@ Reading of the results:
    seconds of exposed fetches over 1,700 steps; the 80 percent occupancy threshold keeps that
    small but not zero.
 
-Implications carried into the roadmap: M1 adds channel-aware planning, a write-through offload
+Implications carried into the roadmap: M1 added channel-aware planning, a write-through offload
 baseline (the strongest reactive policy in production systems), admission control in the
-simulator, and replay of the public FreeInference and TraceLab traces so the regime mix is
+simulator, and loaders for the public FreeInference and TraceLab traces so the regime mix can be
 measured rather than assumed. The KV-size lever moves placement and numerics (M5, M6) up in
 priority relative to residency alone.
 
-What the simulator does not model yet: tensor-parallel communication (device resources scale
-linearly with `tp`), scheduler and kernel-launch overhead beyond a per-layer constant, batching
-interference between prefill and decode, prediction error beyond the log-normal draw, and
-multi-device placement (one device class per run).
+### M1 simulator validation (2026-11-22)
+
+M1 changed the simulator in five ways and re-ran the four regimes. The complete tables are in
+[m1-regimes-2026-11-22.md](m1-regimes-2026-11-22.md), produced by `scripts/m1-regimes.sh`.
+
+1. **Calibrated cost model.** Dense projections and attention are priced as two rooflines that
+   run one after the other, tensor-parallel all-reduces (two per layer, ring, over the per-direction
+   link bandwidth) are on the critical path, and offline throughput for a request shape is the
+   throughput-optimal batch under the KV budget. The efficiency knobs were fitted by grid search
+   against 33 published TensorRT-LLM rows (Llama 3.3 70B, which has the Llama 3.1 70B
+   architecture: FP8 on H200 TP 2, NVFP4 on B200 TP 1, FP8 on H100 TP 2; eleven input/output
+   shapes each; `agentforge cost calibrate`). Result: every row within 12.2 percent (the worst
+   is H100 128/4096 at -12.15), geometric mean 5.3 percent. The fit on the 22 H200 and B200 rows
+   alone selects the same grid point, so the H100 errors are out of sample; the ignored test
+   `h200_b200_fit_reproduces_the_stored_knobs` (`cargo test --release -p agentforge-cost --
+   --ignored`) reruns that fit. One mechanism was needed beyond the roofline: block-scaled FP4
+   GEMMs reach 0.65 of the share of their paper peak that FP8 GEMMs reach; without it the
+   roofline alone fits each device to about 10 and 12 percent but the joint fit stops at 24.5,
+   with every B200 row high and every H200 row low. No published B200 FP8 row exists on the same
+   page, so this knob cannot be told apart from a Blackwell-wide derate. Two knobs sit on the
+   edge of their grid, `bw_util` at the 0.60 floor and the per-layer overhead at the 40 us
+   ceiling; probing one step past each edge raises the worst error (0.55 gives 18.5 percent,
+   60 us gives 16.4), so the optimum is bracketed, but 0.60 is low for HBM streaming and is
+   probably absorbing attention-kernel inefficiency. The M1 target of 15 percent is met for
+   throughput only: no published time-to-first-token series for this model exists. The
+   long-input rows (2048/128, 5000/500, 20000/2000), where prefill is most of the request time,
+   sit within 10 percent, and only 2048/128 is prefill-bound in the model's own labels.
+2. **Honest latency.** M0 measured time to first token from the last retry of a step that had
+   waited for device memory, so capacity waits never reached the TTFT or step-latency rows. M1
+   measures from the moment the step became runnable. Measured at the commit that made this
+   change alone (a983b56, regime D seed 11, M0 cost defaults), mean TTFT rose 28 percent for LRU
+   and 38 percent for the plan and the plan's p90 lead over LRU fell from 13.9 s to 3.9 s; that
+   run is not in the committed tables. The M0 headline that the plan improves p90 TTFT therefore
+   rested partly on a measurement gap.
+3. **Prefill stalls decode.** The device is one timeline: a prefill of duration P delays every
+   decode running when it starts by P (chunked prefill lets decode advance one token per chunk,
+   which is the same to first order). This moves time from the prefill queue into step latency.
+   The 170 to 260 s TTFT p99 in regimes A, B and D is the cold-start prefill queue: histories of
+   roughly 50k to 230k tokens (the 5th to 95th percentile of the synthetic initial prefix)
+   arriving every two seconds, not memory. Regime C on B200 sits at 44 to 56 s.
+4. **Write-through baseline.** A third policy copies each session's new KV to the host tier during
+   every tool wait and keeps the device copy, so a later pressure eviction frees memory without a
+   write. It is what a KV connector does in vLLM or LMCache, and it knows nothing about the agent.
+5. **Channel-aware planning and admission control.** The plan's write must land inside the median
+   wait behind the channel's current backlog or the KV stays; a prefetch that the channel would
+   land after the predicted return is refused instead of queued; new sessions can be gated on
+   device occupancy (`--admit-fraction`).
+
+Regime D (FP8 KV, 80 sessions, 2 TB host, H200 x8) over seeds 1, 11, 23 and 42, plan against
+LRU and write-through:
+
+| metric | lru | write-through | plan |
+|---|---|---|---|
+| pressure evictions, four seeds | 231, 230, 246, 172 | 240, 232, 216, 176 | 173, 140, 155, 122 |
+| evictions with no write | 0 | all | 0 |
+| foreground KV wait (s) | 24.0, 23.3, 24.9, 17.5 | 13.9, 14.7, 12.4, 10.5 | 22.3, 20.6, 21.0, 15.3 |
+| step latency p90 (s) | 42.8, 37.9, 49.4, 69.7 | 47.2, 41.9, 54.4, 78.9 | 41.2, 34.4, 38.1, 66.1 |
+| TTFT p90 (s) | 6.1, 1.2, 5.6, 9.1 | 4.7, 3.1, 5.2, 9.1 | 6.0, 4.0, 3.8, 7.9 |
+| TTFT p99 (s) | 246, 223, 179, 260 | 250, 199, 209, 218 | 236, 187, 199, 243 |
+| TTFT mean (s) | 10.8, 8.5, 8.7, 12.4 | 10.4, 8.5, 8.9, 12.2 | 10.7, 8.6, 9.3, 12.7 |
+
+Reading of the M1 results:
+
+1. **What survives.** The plan still evicts 25 to 39 percent less under pressure in every seed,
+   has the lowest p90 step latency in every seed, and lowers foreground KV waits against LRU in
+   every seed. Its p90 and p99 TTFT beat LRU in three of four seeds each.
+2. **What does not.** Write-through has the lowest foreground KV wait in every seed of every
+   pressured regime (evictions cost it nothing). Mean TTFT is within 0.6 s across the three
+   policies in every seed; the thesis still does not move it, because queueing for device memory
+   and the prefill queue dominate.
+3. **Where the plan loses.** With a scarce, slow host tier (regime B, 128 GB) the plan's
+   foreground wait is 6,082 s against 2,180 s for LRU and 1,300 s for write-through; its p90 TTFT
+   is 47 s against 29 and 27. Channel-aware rules did not change a single decision in regimes B
+   or D: in an instrumented run of regime B (not in the committed tables) the backlog peaked at
+   35 s while the shortest long wait has a 45 s median, so the rule never binds. What hurts is that queued spill writes delay other sessions' foreground fetches,
+   and no rule prices that. The same holds on B200 with a 128 GB host (regime C, now contended
+   under honest TTFT and interference): write-through 929 s, LRU 1,647 s, plan 4,519 s.
+4. **The TraceLab-shaped workload.** With the published per-step, per-session and wait
+   distributions (`--program tracelab`), 40 sessions on eight H200s with FP8 KV barely contend:
+   the policies tie, and TTFT p99 of 140 to 190 s is the first prefill of histories up to the
+   1M-token cap (TraceLab's Table 8 puts the Claude Code prefix p99 at 918k tokens). Pressure in
+   the published mix comes from session count, not from the step shape.
+5. **A simulator bug.** A session whose context outgrew the KV budget made the engine retry
+   forever once nothing else could be evicted; it is now the `SessionTooLarge` error, and the
+   synthesizer caps context growth at 1M tokens, above TraceLab's p99 prefix. The cap clips the
+   sampled distribution rather than modelling compaction.
+
+What the simulator still does not model: scheduler and kernel-launch overhead beyond a per-layer
+constant, the chunk size of chunked prefill (a decode with fewer tokens left than the prefill has
+chunks is stalled too long), prediction error beyond the log-normal draw, cross-session prefix
+sharing, and multi-device placement (one device class per run). The next planning rule to try
+is pricing a spill write by the foreground fetches it delays, which is what regime B exposes.
 
 ## 6. Risks
 
@@ -295,5 +390,11 @@ rather than LRU; alpha-quality Rust MLIR bindings (avoided in the baseline).
   exist and the simulator can replay a public trace against it.
 - Residency tunables set by the M0 simulation: spill above 80 percent device occupancy, keep
   when the median wait is under twice a step or three times a fetch, prefetch only with 10
-  percent headroom, prefetch timed to the 10th-percentile return.
+  percent headroom, prefetch timed to the 10th-percentile return. M1 added: the write must
+  land inside the median wait behind the channel backlog, and a prefetch the channel would land
+  after the predicted return is refused.
+- Cost-model efficiencies are the grid point that minimises the worst error over the bundled
+  TensorRT-LLM rows (`agentforge cost calibrate --fit`), and the rows are data under
+  `crates/agentforge-cost/calibration/`; a new device or precision gets rows before it gets
+  trusted numbers. Link bandwidth in machine files is per direction.
 - Research is dated 2026-10-30 and should be refreshed, not redone.

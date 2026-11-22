@@ -7,12 +7,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use agentforge_compile::{kv_liveness, place, plan_residency, ResidencyAction, TierBudget};
+use agentforge_compile::{
+    kv_liveness, place, plan_residency, DeviceState, ResidencyAction, TierBudget,
+};
+use agentforge_cost::calibration::{self, Calibration};
 use agentforge_cost::{self as cost, Efficiency, Phase};
 use agentforge_ir::{AgentProgram, LatencyModel, ModelSpec, Precision};
 use agentforge_machine::Machine;
 use agentforge_sim::{
-    render_table, run, synthesize, Lru, Plan, Policy, SimConfig, SimReport, SyntheticConfig, Trace,
+    load_trace, render_table, run, synthesize, Lru, Plan, Policy, SimConfig, SimReport, StepCount,
+    SyntheticConfig, TraceFormat, WriteThrough,
 };
 
 #[derive(Parser)]
@@ -83,7 +87,8 @@ struct TargetArgs {
     /// Device name within the machine (default: the first device).
     #[arg(long)]
     device: Option<String>,
-    /// Tensor-parallel degree; device resources scale linearly.
+    /// Tensor-parallel degree; device resources scale linearly and all-reduces run over the
+    /// machine's fastest link.
     #[arg(long, default_value_t = 1)]
     tp: u32,
     /// Override the model's weight precision (fp16, bf16, fp8, mxfp4, nvfp4, ...).
@@ -113,6 +118,20 @@ enum CostCommand {
         context: u64,
         #[arg(long, default_value_t = 1)]
         batch: u64,
+    },
+    /// Compare predicted offline throughput with the bundled TensorRT-LLM measurements.
+    Calibrate {
+        /// Largest batch the sweep tries; 2048 is trtllm-bench's default maximum batch size.
+        #[arg(long, default_value_t = 2048)]
+        max_batch: u64,
+        /// Fraction of device memory kept out of the KV budget; 0.10 matches TensorRT-LLM's
+        /// default free-memory fraction of 0.9.
+        #[arg(long, default_value_t = 0.10)]
+        reserve: f64,
+        /// Grid-search the efficiency knobs for the smallest worst-row error instead of
+        /// printing the table for the defaults.
+        #[arg(long)]
+        fit: bool,
     },
 }
 
@@ -145,10 +164,33 @@ enum PlanCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TraceFormatChoice {
+    /// One `Session` per line, as written by `--save-trace`.
+    Native,
+    /// The FreeInference agentic trace (Harvard), decompressed to JSONL.
+    Freeinference,
+    /// The TraceLab coding trace (UW SyFI), decompressed to JSONL.
+    Tracelab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProgramChoice {
+    /// The default coding-agent loop (20k stable prefix, three tool arms).
+    CodingDefault,
+    /// The TraceLab-published step, session-length and wait distributions; `--steps`,
+    /// `--prefix-median` and `--prefix-sigma` are ignored.
+    Tracelab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PolicyChoice {
     Lru,
+    WriteThrough,
     Plan,
+    /// lru and plan.
     Both,
+    /// lru, write-through and plan.
+    All,
 }
 
 #[derive(Subcommand)]
@@ -176,15 +218,29 @@ enum SimCommand {
         policy: PolicyChoice,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Synthetic workload to sample from.
+        #[arg(long, value_enum, default_value_t = ProgramChoice::CodingDefault)]
+        program: ProgramChoice,
         /// Replay a JSONL trace instead of synthesizing one.
         #[arg(long)]
         trace: Option<PathBuf>,
+        /// Layout of the file given to --trace.
+        #[arg(long, value_enum, default_value_t = TraceFormatChoice::Native)]
+        trace_format: TraceFormatChoice,
         /// Save the trace that was run as JSONL.
         #[arg(long)]
         save_trace: Option<PathBuf>,
         /// Override the capacity of the first (host DRAM) tier in GB.
         #[arg(long)]
         host_gb: Option<f64>,
+        /// Let decode run at full speed during a prefill instead of stalling for its duration.
+        #[arg(long)]
+        decode_overlaps_prefill: bool,
+        /// Admit a new session only while the device KV in use, its own included, stays within
+        /// this fraction (0 to 1] of the KV budget; later sessions queue in arrival order.
+        /// Every session is admitted on arrival when omitted.
+        #[arg(long)]
+        admit_fraction: Option<f64>,
         /// Print reports as JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -247,6 +303,17 @@ fn resolve(target: &TargetArgs) -> Result<Resolved> {
     })
 }
 
+impl Resolved {
+    fn cost_target(&self, tp: u32) -> cost::Target<'_> {
+        cost::Target {
+            device: &self.machine.devices[self.device_index],
+            tp,
+            link: self.machine.fastest_link(),
+            eff: Efficiency::default(),
+        }
+    }
+}
+
 fn print_phase(label: &str, phase: &Phase) {
     println!("{label}");
     println!("  flops            {:.3e}", phase.flops);
@@ -254,6 +321,7 @@ fn print_phase(label: &str, phase: &Phase) {
     println!("  compute time     {:.4} s", phase.compute_s);
     println!("  memory time      {:.4} s", phase.memory_s);
     println!("  overhead         {:.4} s", phase.overhead_s);
+    println!("  communication    {:.4} s", phase.comm_s);
     println!(
         "  total            {:.4} s ({}-bound)",
         phase.seconds,
@@ -335,7 +403,6 @@ fn models(command: ModelsCommand) -> Result<()> {
 }
 
 fn cost_cmd(command: CostCommand) -> Result<()> {
-    let eff = Efficiency::default();
     match command {
         CostCommand::Prefill {
             target,
@@ -344,7 +411,7 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
         } => {
             let r = resolve(&target)?;
             let device = &r.machine.devices[r.device_index];
-            let phase = cost::prefill(&r.model, device, tokens, prefix, target.tp, &eff)?;
+            let phase = cost::prefill(&r.model, &r.cost_target(target.tp), tokens, prefix)?;
             print_phase(
                 &format!(
                     "prefill of {tokens} tokens behind {prefix} cached tokens: {} on {} x{}",
@@ -363,7 +430,7 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
         } => {
             let r = resolve(&target)?;
             let device = &r.machine.devices[r.device_index];
-            let phase = cost::decode_step(&r.model, device, context, batch, target.tp, &eff)?;
+            let phase = cost::decode_step(&r.model, &r.cost_target(target.tp), context, batch)?;
             print_phase(
                 &format!(
                     "decode step for {batch} sequences at {context} tokens: {} on {} x{}",
@@ -378,7 +445,54 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
             );
             Ok(())
         }
+        CostCommand::Calibrate {
+            max_batch,
+            reserve,
+            fit,
+        } => calibrate(max_batch, reserve, fit),
     }
+}
+
+fn calibrate(max_batch: u64, reserve: f64, fit: bool) -> Result<()> {
+    let cal = Calibration::builtin();
+    if fit {
+        let (eff, max_error) = calibration::fit(&cal, reserve, max_batch)?;
+        let results = cal.evaluate(&eff, reserve, max_batch)?;
+        println!("{eff:#?}");
+        println!("max |error|      {:.1}%", 100.0 * max_error);
+        println!(
+            "geomean |error|  {:.1}%",
+            100.0 * calibration::geomean_abs_error(&results)
+        );
+        return Ok(());
+    }
+    let results = cal.evaluate(&Efficiency::default(), reserve, max_batch)?;
+    println!("{} ({})", cal.name, cal.metric);
+    println!();
+    println!("| machine | weights | tp | isl | osl | published tok/s | predicted tok/s | batch | bound | error |");
+    println!("|---|---|---:|---:|---:|---:|---:|---:|---|---:|");
+    for r in &results {
+        println!(
+            "| {} | {} | {} | {} | {} | {:.0} | {:.0} | {} | {} | {:+.1}% |",
+            r.row.machine,
+            r.row.weight_precision,
+            r.row.tp,
+            r.row.isl,
+            r.row.osl,
+            r.row.tokens_per_s,
+            r.predicted.output_tokens_per_s,
+            r.predicted.batch,
+            r.predicted.bound,
+            100.0 * r.error
+        );
+    }
+    println!();
+    println!(
+        "max |error| {:.1}%, geomean |error| {:.1}%",
+        100.0 * calibration::max_abs_error(&results),
+        100.0 * calibration::geomean_abs_error(&results)
+    );
+    Ok(())
 }
 
 fn plan_cmd(command: PlanCommand) -> Result<()> {
@@ -413,17 +527,14 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
             step_hint,
         } => {
             let r = resolve(&target)?;
-            let device = &r.machine.devices[r.device_index];
-            let eff = Efficiency::default();
+            let cost_target = r.cost_target(target.tp);
             let kv = cost::kv_bytes(&r.model, prefix_tokens) as f64;
-            let recompute = cost::prefill(&r.model, device, prefix_tokens, 0, target.tp, &eff)?;
+            let recompute = cost::prefill(&r.model, &cost_target, prefix_tokens, 0)?;
             let step_hint_s = match step_hint {
                 Some(s) => s,
                 None => {
-                    let step_prefill =
-                        cost::prefill(&r.model, device, 875, prefix_tokens, target.tp, &eff)?;
-                    let step_decode =
-                        cost::decode_step(&r.model, device, prefix_tokens, 4, target.tp, &eff)?;
+                    let step_prefill = cost::prefill(&r.model, &cost_target, 875, prefix_tokens)?;
+                    let step_decode = cost::decode_step(&r.model, &cost_target, prefix_tokens, 4)?;
                     step_prefill.seconds + 214.0 * step_decode.seconds
                 }
             };
@@ -446,8 +557,11 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
                 &budgets,
                 target.tp,
                 recompute.seconds,
-                pressure,
-                step_hint_s,
+                DeviceState {
+                    pressure,
+                    step_hint_s,
+                    channel_backlog_s: 0.0,
+                },
             );
             println!("KV for {prefix_tokens} tokens: {:.1} GB", kv / 1e9);
             println!("recompute: {:.2} s", d.recompute_s);
@@ -456,6 +570,10 @@ fn plan_cmd(command: PlanCommand) -> Result<()> {
                 ResidencyAction::Keep => println!("decision: keep on device"),
                 ResidencyAction::Spill { tier, prefetch_lead_s, .. } => println!(
                     "decision: spill to '{tier}' during the wait, prefetch {prefetch_lead_s:.2} s before the predicted return"
+                ),
+                ResidencyAction::WriteThrough { tier_index } => println!(
+                    "decision: keep on device and write through to '{}' during the wait",
+                    r.machine.tiers[*tier_index].name
                 ),
                 ResidencyAction::Drop => println!("decision: drop and recompute on return"),
             }
@@ -494,11 +612,21 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             prefix_sigma,
             policy,
             seed,
+            program,
             trace,
+            trace_format,
             save_trace,
             host_gb,
+            decode_overlaps_prefill,
+            admit_fraction,
             json,
         } => {
+            if let Some(f) = admit_fraction {
+                let valid = f > 0.0 && f <= 1.0;
+                if !valid {
+                    bail!("--admit-fraction must be in (0, 1], got {f}");
+                }
+            }
             let r = resolve(&target)?;
             let device = r.machine.devices[r.device_index].clone();
             let mut tiers = r.machine.tiers.clone();
@@ -508,26 +636,54 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
                     None => bail!("machine '{}' has no memory tiers", r.machine.name),
                 }
             }
-            let cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
+            let mut cfg = SimConfig::new(r.model.clone(), device, tiers, target.tp);
+            cfg.link = r.machine.fastest_link().cloned();
+            cfg.prefill_stalls_decode = !decode_overlaps_prefill;
+            cfg.admit_fraction = admit_fraction;
             let trace_data = match &trace {
                 Some(path) => {
                     let text = fs::read_to_string(path)
                         .with_context(|| format!("reading trace {}", path.display()))?;
-                    Trace::from_jsonl(&text)
-                        .with_context(|| format!("parsing trace {}", path.display()))?
+                    let format = match trace_format {
+                        TraceFormatChoice::Native => TraceFormat::Native,
+                        TraceFormatChoice::Freeinference => TraceFormat::FreeInference,
+                        TraceFormatChoice::Tracelab => TraceFormat::TraceLab,
+                    };
+                    let (loaded, summary) = load_trace(&text, format)
+                        .with_context(|| format!("parsing trace {}", path.display()))?;
+                    eprintln!(
+                        "loaded {} sessions ({} recorded, {} splits at context shrinks), {} steps, {} lines skipped",
+                        summary.sessions_out,
+                        summary.sessions_in,
+                        summary.splits,
+                        summary.steps,
+                        summary.skipped_lines
+                    );
+                    loaded
                 }
-                None => synthesize(
-                    &AgentProgram::coding_agent_default(),
-                    &SyntheticConfig {
-                        sessions,
-                        mean_steps: steps,
-                        arrival_rate_per_s: arrival_rate,
-                        initial_prefix_median: prefix_median,
-                        initial_prefix_sigma: prefix_sigma,
-                        seed,
-                        ..Default::default()
-                    },
-                ),
+                None => match program {
+                    ProgramChoice::CodingDefault => synthesize(
+                        &AgentProgram::coding_agent_default(),
+                        &SyntheticConfig {
+                            sessions,
+                            steps: StepCount::Geometric { mean: steps },
+                            arrival_rate_per_s: arrival_rate,
+                            initial_prefix_median: prefix_median,
+                            initial_prefix_sigma: prefix_sigma,
+                            seed,
+                            ..Default::default()
+                        },
+                    ),
+                    ProgramChoice::Tracelab => synthesize(
+                        &AgentProgram::tracelab_coding_agent(),
+                        &SyntheticConfig {
+                            sessions,
+                            arrival_rate_per_s: arrival_rate,
+                            seed,
+                            ..SyntheticConfig::tracelab()
+                        },
+                    ),
+                },
             };
             if let Some(path) = &save_trace {
                 fs::write(path, trace_data.to_jsonl()?)
@@ -535,8 +691,10 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
             }
             let policies: Vec<Box<dyn Policy>> = match policy {
                 PolicyChoice::Lru => vec![Box::new(Lru)],
+                PolicyChoice::WriteThrough => vec![Box::new(WriteThrough)],
                 PolicyChoice::Plan => vec![Box::new(Plan)],
                 PolicyChoice::Both => vec![Box::new(Lru), Box::new(Plan)],
+                PolicyChoice::All => vec![Box::new(Lru), Box::new(WriteThrough), Box::new(Plan)],
             };
             let mut reports: Vec<SimReport> = Vec::new();
             for p in &policies {

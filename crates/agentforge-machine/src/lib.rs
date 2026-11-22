@@ -2,7 +2,7 @@
 //!
 //! A machine is a set of devices (GPUs, SRAM LPUs, NPUs, CPUs) with compute per precision,
 //! device-attached memory and on-chip SRAM, plus memory tiers reachable from the devices (host
-//! DRAM, NVMe, remote pools) and links. Descriptions are TOML files; five are bundled and more
+//! DRAM, NVMe, remote pools) and links. Descriptions are TOML files; six are bundled and more
 //! can be loaded from disk. Numbers carry their sources in the file; vendor peaks are marked.
 
 use std::collections::BTreeMap;
@@ -97,6 +97,8 @@ impl MemoryTier {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Link {
     pub name: String,
+    /// Bandwidth in GB/s that one device can send in one direction. Vendors usually quote the
+    /// bidirectional total, which is twice this.
     pub bw_gbps: f64,
     #[serde(default)]
     pub latency_us: f64,
@@ -132,6 +134,7 @@ pub enum MachineError {
 }
 
 const BUILTINS: &[(&str, &str)] = &[
+    ("h100", include_str!("../machines/h100.toml")),
     ("h200", include_str!("../machines/h200.toml")),
     ("b200", include_str!("../machines/b200.toml")),
     ("mi355x", include_str!("../machines/mi355x.toml")),
@@ -245,6 +248,13 @@ impl Machine {
         self.tiers.iter().find(|t| t.name == name)
     }
 
+    /// The link with the highest bandwidth, if the machine has any links.
+    pub fn fastest_link(&self) -> Option<&Link> {
+        self.links
+            .iter()
+            .max_by(|a, b| a.bw_gbps.total_cmp(&b.bw_gbps))
+    }
+
     /// Tiers ordered shallow to deep by read bandwidth (fastest first).
     pub fn tiers_by_speed(&self) -> Vec<&MemoryTier> {
         let mut tiers: Vec<&MemoryTier> = self.tiers.iter().collect();
@@ -276,6 +286,15 @@ mod tests {
         // No FP4 units on Hopper: NVFP4 falls back to the FP8 rate.
         assert_eq!(d.tflops(Precision::Nvfp4), Some(1979.0));
         assert!(m.tier("host_dram").is_some());
+    }
+
+    #[test]
+    fn fastest_link_has_the_highest_bandwidth() {
+        let mut m = Machine::builtin("h200").unwrap();
+        m.links.reverse();
+        assert_eq!(m.fastest_link().map(|l| l.name.as_str()), Some("nvlink4"));
+        m.links.clear();
+        assert!(m.fastest_link().is_none());
     }
 
     #[test]

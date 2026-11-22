@@ -41,8 +41,9 @@ notes = "One PCIe Gen5 NVMe drive per GPU; arrays scale linearly."
 
 [[links]]
 name = "nvlink4"
-bw_gbps = 900
+bw_gbps = 450
 latency_us = 2
+notes = "Per direction per GPU. NVIDIA quotes 900 GB/s as the bidirectional total."
 
 [[links]]
 name = "pcie5"

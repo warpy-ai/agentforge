@@ -10,4 +10,6 @@ authors.workspace = true
 [dependencies]
 agentforge-ir = { workspace = true }
 agentforge-machine = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }

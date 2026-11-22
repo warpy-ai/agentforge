@@ -31,7 +31,9 @@ version = "0.1.0"
 dependencies = [
  "agentforge-ir",
  "agentforge-machine",
+ "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

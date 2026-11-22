@@ -1,0 +1,347 @@
+# Published TensorRT-LLM max-throughput rows used to calibrate the cost model.
+# Source: https://nvidia.github.io/TensorRT-LLM/performance/perf-overview.html, page dated
+# 2025-09-15 (commit 0c9430e), read 2026-11-21. Metric: total output tokens per second with
+# requests submitted at an infinite rate to trtllm-bench (PyTorch backend), i.e. offline maximum
+# throughput; the page states no concurrency. The rows are FP8 on H100 and H200 at TP 2 and FP4
+# on B200 at TP 1, 33 in all. The models are NVIDIA's Llama 3.3 70B Instruct FP8 and FP4
+# checkpoints; Llama 3.3 70B has the Llama 3.1 70B architecture (80 layers, 8192 wide, 64 heads,
+# 8 KV heads, 28672 FFN), so the `llama-3.1-70b` preset describes it. The FP8 and NVFP4 Model
+# Optimizer checkpoints quantize the KV cache to FP8 (assumption, from the checkpoints'
+# hf_quant_config kv_cache_quant_algo; not stated on the page).
+name = "trtllm-perf-overview-2025-09-15"
+source = "https://nvidia.github.io/TensorRT-LLM/performance/perf-overview.html"
+retrieved = "2026-11-21"
+metric = "total output tokens per second, offline, infinite request rate, trtllm-bench PyTorch backend"
+
+# Llama 3.3 70B Instruct FP8 on H200 SXM 141GB (DGX H200), TP 2.
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 128
+tokens_per_s = 6327.98
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 2048
+tokens_per_s = 7467.36
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 4096
+tokens_per_s = 5526.42
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 500
+osl = 2000
+tokens_per_s = 6639.15
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1000
+osl = 1000
+tokens_per_s = 4773.33
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1000
+osl = 2000
+tokens_per_s = 5790.36
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1024
+osl = 2048
+tokens_per_s = 5480.44
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 2048
+osl = 128
+tokens_per_s = 747.55
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 2048
+osl = 2048
+tokens_per_s = 3775.80
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 5000
+osl = 500
+tokens_per_s = 978.28
+
+[[rows]]
+machine = "h200"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 20000
+osl = 2000
+tokens_per_s = 609.42
+
+# Llama 3.3 70B Instruct FP4 on B200 180GB (DGX B200), TP 1.
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 128
+osl = 128
+tokens_per_s = 10613.84
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 128
+osl = 2048
+tokens_per_s = 9445.51
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 128
+osl = 4096
+tokens_per_s = 6276.85
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 500
+osl = 2000
+tokens_per_s = 6983.27
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 1000
+osl = 1000
+tokens_per_s = 6434.29
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 1000
+osl = 2000
+tokens_per_s = 6725.03
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 1024
+osl = 2048
+tokens_per_s = 6546.61
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 2048
+osl = 128
+tokens_per_s = 1330.35
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 2048
+osl = 2048
+tokens_per_s = 4528.48
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 5000
+osl = 500
+tokens_per_s = 1427.44
+
+[[rows]]
+machine = "b200"
+model = "llama-3.1-70b"
+weight_precision = "nvfp4"
+kv_precision = "fp8"
+tp = 1
+isl = 20000
+osl = 2000
+tokens_per_s = 636.36
+
+# Llama 3.3 70B Instruct FP8 on H100 SXM 80GB (DGX H100), TP 2.
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 128
+tokens_per_s = 6092.28
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 2048
+tokens_per_s = 5892.94
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 128
+osl = 4096
+tokens_per_s = 3828.46
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 500
+osl = 2000
+tokens_per_s = 4654.74
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1000
+osl = 1000
+tokens_per_s = 4181.06
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1000
+osl = 2000
+tokens_per_s = 3708.93
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 1024
+osl = 2048
+tokens_per_s = 3785.04
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 2048
+osl = 128
+tokens_per_s = 723.40
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 2048
+osl = 2048
+tokens_per_s = 2785.53
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 5000
+osl = 500
+tokens_per_s = 865.55
+
+[[rows]]
+machine = "h100"
+model = "llama-3.1-70b"
+weight_precision = "fp8"
+kv_precision = "fp8"
+tp = 2
+isl = 20000
+osl = 2000
+tokens_per_s = 411.85
