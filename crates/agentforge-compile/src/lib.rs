@@ -168,8 +168,6 @@ pub fn plan_residency(
             shallow_fetch.min(recompute_s)
         ));
     }
-    // 3. A tier whose write, behind the channel backlog, hides inside the median wait and whose
-    //    fetch hides inside the p20 wait: spill now, prefetch before the early return.
     let lands_in_time = |c: &Candidate| c.write_s + backlog_s <= p50;
     if let Some(c) = candidates
         .iter()
@@ -183,9 +181,6 @@ pub fn plan_residency(
             ),
         );
     }
-    // 4. Otherwise the shallowest tier with room whose write lands inside the median wait, even
-    //    if the fetch may be exposed; when the backlog keeps every write from landing in time,
-    //    a spill would only queue more traffic, so keep.
     if let Some(c) = candidates.iter().find(|c| c.fits && lands_in_time(c)) {
         return spill(
             c,

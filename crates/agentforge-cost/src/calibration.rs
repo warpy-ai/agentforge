@@ -194,11 +194,6 @@ mod tests {
         assert!(cal.rows.iter().all(|r| r.kv_precision == Precision::Fp8));
     }
 
-    /// M1's bar. The fitted defaults reach 12.1 percent at worst and a geometric mean of 5.3
-    /// percent over the 33 rows; per device the worst rows are H100 128/4096 (-12.1 percent),
-    /// B200 128/128 (-12.1) and H200 1000/2000 (-11.6). Every device's errors straddle zero:
-    /// before `fp4_mfu_scale`, one shared set of knobs left every H200 row low and every B200 row
-    /// high, and the best joint fit was 24.5 percent.
     #[test]
     fn published_throughput_rows_within_15_percent() -> Result<(), CalibrationError> {
         let results = Calibration::builtin().evaluate(&Efficiency::default(), 0.10, 2048)?;
@@ -209,9 +204,6 @@ mod tests {
         Ok(())
     }
 
-    /// The grid point [`fit`] picks on the 22 H200 and B200 rows alone, from
-    /// `fit(&Calibration::builtin().filter(|r| r.machine != "h100"), 0.10, 2048)` (about 80 s in
-    /// release). It is the point the 33-row fit picks too: the H100 rows did not move it.
     const H200_B200_FIT: Efficiency = Efficiency {
         mfu_prefill: 0.6,
         mfu_decode: 0.4,
@@ -221,9 +213,6 @@ mod tests {
         link_util: 0.75,
     };
 
-    /// Out of sample: knobs fitted without any H100 row predict all eleven within 12.1 percent
-    /// (worst 128/4096 at -12.1 percent), so the H200's FP8 efficiencies carry to the H100 through
-    /// its bandwidth and capacity alone.
     #[test]
     fn h200_b200_fit_transfers_to_h100_within_15_percent() -> Result<(), CalibrationError> {
         let h100 = Calibration::builtin().filter(|row| row.machine == "h100");

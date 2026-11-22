@@ -188,7 +188,6 @@ fn fit_lognormal(mut waits: Vec<f64>) -> LatencyModel {
     }
 }
 
-/// One LLM round of a recorded session, in seconds since the Unix epoch.
 #[derive(Debug, Clone, PartialEq)]
 struct Round {
     start_s: f64,
@@ -252,8 +251,6 @@ fn session_from_run(run: &[Round], t0: f64) -> Session {
     }
 }
 
-/// Parse each non-empty line as JSON, failing on a line that is not JSON, and keep the records
-/// `parse` accepts. Returns the records and the number of lines `parse` rejected.
 fn parse_lines<T>(
     text: &str,
     mut parse: impl FnMut(Value) -> Option<T>,

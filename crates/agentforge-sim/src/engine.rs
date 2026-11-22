@@ -114,15 +114,9 @@ enum KvState {
     Absent,
     Dropped,
     OnDevice,
-    /// On the device, with the first `bytes` of it also landed in `tier`.
-    Mirrored {
-        tier: usize,
-        bytes: f64,
-    },
+    Mirrored { tier: usize, landed_bytes: f64 },
     OnTier(usize),
-    InFlight {
-        ready_at: f64,
-    },
+    InFlight { ready_at: f64 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -348,14 +342,17 @@ impl<'a> Sim<'a> {
     fn unmirrored_bytes(&self, sid: usize, tier: usize) -> f64 {
         let s = &self.sess[sid];
         match s.state {
-            KvState::Mirrored { tier: t, bytes } if t == tier => s.kv_bytes - bytes,
+            KvState::Mirrored {
+                tier: t,
+                landed_bytes,
+            } if t == tier => s.kv_bytes - landed_bytes,
             _ => s.kv_bytes,
         }
     }
 
     fn discard_mirror(&mut self, sid: usize) {
-        if let KvState::Mirrored { tier, bytes } = self.sess[sid].state {
-            self.tier_used[tier] -= bytes;
+        if let KvState::Mirrored { tier, landed_bytes } = self.sess[sid].state {
+            self.tier_used[tier] -= landed_bytes;
             self.sess[sid].state = KvState::OnDevice;
         }
     }
@@ -544,7 +541,9 @@ impl<'a> Sim<'a> {
                 break;
             }
             let dest = match self.sess[v.session].state {
-                KvState::Mirrored { tier, bytes } if self.tier_free(tier) >= v.kv_bytes - bytes => {
+                KvState::Mirrored { tier, landed_bytes }
+                    if self.tier_free(tier) >= v.kv_bytes - landed_bytes =>
+                {
                     Some(tier)
                 }
                 _ => (0..cfg.tiers.len()).find(|&i| self.tier_free(i) >= v.kv_bytes),
@@ -732,7 +731,7 @@ impl<'a> Sim<'a> {
         let recompute_s = self.recompute_seconds(self.sess[sid].prefix_tokens)?;
         let (tier_free, device_free, recompute_s) = self.context(recompute_s);
         let mirrored_bytes = match self.sess[sid].state {
-            KvState::Mirrored { bytes, .. } => bytes,
+            KvState::Mirrored { landed_bytes, .. } => landed_bytes,
             _ => 0.0,
         };
         let action = {
@@ -789,7 +788,10 @@ impl<'a> Sim<'a> {
             self.dev.kv_used -= kv;
             KvState::OnTier(tier)
         } else {
-            KvState::Mirrored { tier, bytes: kv }
+            KvState::Mirrored {
+                tier,
+                landed_bytes: kv,
+            }
         };
     }
 
@@ -1061,9 +1063,6 @@ mod tests {
         );
     }
 
-    /// A session whose context outgrows the KV budget cannot run even with the device to
-    /// itself; the engine must say so instead of retrying forever once nothing else is left to
-    /// evict.
     #[test]
     fn session_that_outgrows_the_kv_budget_is_an_error() {
         let cfg = pressure_config();

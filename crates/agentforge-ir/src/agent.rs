@@ -351,9 +351,9 @@ impl AgentProgram {
         coding_loop(
             "coding-agent-default",
             &[
-                (0.75, "read_or_edit", 1.5, 0.8),
-                (0.15, "build_or_test", 45.0, 0.7),
-                (0.10, "human_turn", 180.0, 1.0),
+                arm(0.75, "read_or_edit", 1.5, 0.8),
+                arm(0.15, "build_or_test", 45.0, 0.7),
+                arm(0.10, "human_turn", 180.0, 1.0),
             ],
         )
     }
@@ -368,18 +368,32 @@ impl AgentProgram {
         coding_loop(
             "tracelab-coding-agent",
             &[
-                (0.742, "fast_tool", 0.08, 1.6),
-                (0.15, "slow_tool", 12.0, 1.3),
-                (0.108, "human_turn", 84.0, 1.9),
+                arm(0.742, "fast_tool", 0.08, 1.6),
+                arm(0.15, "slow_tool", 12.0, 1.3),
+                arm(0.108, "human_turn", 84.0, 1.9),
             ],
         )
     }
 }
 
-/// A one-step loop over a 20k-token stable prefix: each step appends 875 tokens, generates 214
-/// and calls one of `arms`, given as `(probability, tool name, median seconds, sigma)` of a
-/// log-normal latency.
-fn coding_loop(name: &str, arms: &[(f64, &str, f64, f64)]) -> AgentProgram {
+/// One tool the loop may call after a step, with a log-normal wait.
+struct LoopArm {
+    probability: f64,
+    tool: &'static str,
+    median_s: f64,
+    sigma: f64,
+}
+
+const fn arm(probability: f64, tool: &'static str, median_s: f64, sigma: f64) -> LoopArm {
+    LoopArm {
+        probability,
+        tool,
+        median_s,
+        sigma,
+    }
+}
+
+fn coding_loop(name: &str, arms: &[LoopArm]) -> AgentProgram {
     AgentProgram {
         name: name.to_string(),
         prefix: vec![
@@ -406,11 +420,14 @@ fn coding_loop(name: &str, arms: &[(f64, &str, f64, f64)]) -> AgentProgram {
             transition: Transition::ToolChoice {
                 arms: arms
                     .iter()
-                    .map(|&(probability, tool, median_s, sigma)| ToolArm {
-                        probability,
+                    .map(|a| ToolArm {
+                        probability: a.probability,
                         call: ToolCall {
-                            name: tool.to_string(),
-                            latency: LatencyModel::LogNormal { median_s, sigma },
+                            name: a.tool.to_string(),
+                            latency: LatencyModel::LogNormal {
+                                median_s: a.median_s,
+                                sigma: a.sigma,
+                            },
                             result_tokens: 0,
                         },
                         then: 0,
