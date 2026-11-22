@@ -624,7 +624,7 @@ fn sim_cmd(command: SimCommand) -> Result<()> {
                     &AgentProgram::coding_agent_default(),
                     &SyntheticConfig {
                         sessions,
-                        mean_steps: steps,
+                        steps: agentforge_sim::StepCount::Geometric { mean: steps },
                         arrival_rate_per_s: arrival_rate,
                         initial_prefix_median: prefix_median,
                         initial_prefix_sigma: prefix_sigma,

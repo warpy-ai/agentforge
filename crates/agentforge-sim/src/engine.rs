@@ -890,7 +890,6 @@ mod tests {
             &AgentProgram::coding_agent_default(),
             &SyntheticConfig {
                 sessions,
-                mean_steps: 20.0,
                 arrival_rate_per_s: 0.5,
                 seed,
                 ..Default::default()

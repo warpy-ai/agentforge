@@ -65,6 +65,19 @@ impl Trace {
     }
 }
 
+/// How many steps a synthetic session has, sampled in `1..=max_steps`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StepCount {
+    Geometric {
+        mean: f64,
+    },
+    /// Rounded to the nearest step.
+    LogNormal {
+        median: f64,
+        sigma: f64,
+    },
+}
+
 /// Parameters of the synthetic generator.
 ///
 /// Defaults follow the TraceLab measurements of coding agents (University of Washington, June
@@ -75,7 +88,7 @@ impl Trace {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyntheticConfig {
     pub sessions: u32,
-    pub mean_steps: f64,
+    pub steps: StepCount,
     pub max_steps: u32,
     pub arrival_rate_per_s: f64,
     /// Median of the initial prefix in tokens; `0` uses the program's prefix only.
@@ -91,7 +104,7 @@ impl Default for SyntheticConfig {
     fn default() -> Self {
         SyntheticConfig {
             sessions: 64,
-            mean_steps: 20.0,
+            steps: StepCount::Geometric { mean: 20.0 },
             max_steps: 200,
             arrival_rate_per_s: 0.5,
             initial_prefix_median: 110_000,
@@ -100,6 +113,31 @@ impl Default for SyntheticConfig {
             new_tokens_sigma: 0.6,
             output_tokens_sigma: 0.7,
             seed: 1,
+        }
+    }
+}
+
+impl SyntheticConfig {
+    /// The per-step token and per-session step distributions published in TraceLab (arXiv
+    /// 2606.30560 v2, read 2026-11-21), pooled over Claude Code and Codex. Table 8: prefix
+    /// median about 119k tokens with p90 near 467k (Claude) and 202k (Codex), append median
+    /// 875 with p90 about 5k to 8k, output median 214 with p90 about 940 to 1,700. Table 2:
+    /// tool-initiated steps per session at p50 15, p90 135, p99 1,107 and mean 73.6. The paper
+    /// gives no session arrival rate, so the default 0.5 per second stays. Pair it with
+    /// [`AgentProgram::tracelab_coding_agent`] for the per-step waits.
+    pub fn tracelab() -> SyntheticConfig {
+        SyntheticConfig {
+            steps: StepCount::LogNormal {
+                median: 16.0,
+                sigma: 1.7,
+            },
+            max_steps: 2_000,
+            initial_prefix_median: 119_000,
+            initial_prefix_sigma: 0.8,
+            max_initial_prefix: 1_000_000,
+            new_tokens_sigma: 1.4,
+            output_tokens_sigma: 1.3,
+            ..Default::default()
         }
     }
 }
@@ -136,7 +174,14 @@ pub fn synthesize(program: &AgentProgram, cfg: &SyntheticConfig) -> Trace {
                 .clamp(0.0, cfg.max_initial_prefix as f64) as u64;
             sampled.max(program.prefix_tokens())
         };
-        let n_steps = rng.geometric(cfg.mean_steps, cfg.max_steps);
+        let n_steps = match cfg.steps {
+            StepCount::Geometric { mean } => rng.geometric(mean, cfg.max_steps),
+            StepCount::LogNormal { median, sigma } => {
+                rng.lognormal(median, sigma)
+                    .round()
+                    .clamp(1.0, f64::from(cfg.max_steps.max(1))) as u32
+            }
+        };
         let mut step_id = program.entry;
         let mut steps = Vec::with_capacity(n_steps as usize);
         for i in 0..n_steps {
@@ -237,6 +282,21 @@ mod tests {
             }
         }
         assert!(names.contains("read_or_edit"), "{names:?}");
+    }
+
+    #[test]
+    fn tracelab_sessions_are_deterministic_with_a_published_median_length() {
+        let p = AgentProgram::tracelab_coding_agent();
+        let cfg = SyntheticConfig {
+            sessions: 200,
+            ..SyntheticConfig::tracelab()
+        };
+        let a = synthesize(&p, &cfg);
+        assert_eq!(a, synthesize(&p, &cfg));
+        let mut lengths: Vec<usize> = a.sessions.iter().map(|s| s.steps.len()).collect();
+        lengths.sort_unstable();
+        let median = lengths[lengths.len() / 2];
+        assert!((8..=30).contains(&median), "median steps {median}");
     }
 
     #[test]
