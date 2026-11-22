@@ -1,14 +1,19 @@
 //! Analytical cost model.
 //!
-//! Prefill and decode phases are modelled as the larger of a compute time and a memory time
-//! plus a small per-layer overhead, in the style of GenZ and LLMCompass (single-digit percent
-//! error on GPUs in their validations). Tensor parallelism scales compute and bandwidth linearly
-//! and adds two ring all-reduces of the activations per layer over the scale-up link.
+//! Prefill and decode phases are modelled per operator, in the style of GenZ and LLMCompass
+//! (single-digit percent error on GPUs in their validations): the dense projections and attention
+//! run as separate kernels one after the other, so each takes the larger of its compute time and
+//! memory time and the two add, plus a small per-layer overhead. Tensor parallelism scales
+//! compute and bandwidth linearly and adds two ring all-reduces of the activations per layer over
+//! the scale-up link.
 
 use agentforge_ir::{ModelSpec, Precision};
 use agentforge_machine::{Device, Link};
 
-/// Achieved fractions of peak and fixed overheads.
+pub mod calibration;
+
+/// Achieved fractions of peak and fixed overheads. The defaults are the grid point
+/// [`calibration::fit`] picks for the bundled TensorRT-LLM rows (`agentforge cost calibrate --fit`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Efficiency {
     /// Fraction of peak compute reached by large prefill GEMMs.
@@ -28,9 +33,9 @@ pub struct Efficiency {
 impl Default for Efficiency {
     fn default() -> Self {
         Efficiency {
-            mfu_prefill: 0.6,
+            mfu_prefill: 0.5,
             mfu_decode: 0.3,
-            bw_util: 0.8,
+            bw_util: 0.6,
             per_layer_overhead_s: 2e-5,
             link_util: 0.75,
         }
@@ -49,6 +54,12 @@ pub struct Target<'a> {
 }
 
 /// The cost breakdown of one phase.
+///
+/// The dense projections (weight reads against GEMM FLOPs) and attention (KV traffic against
+/// attention FLOPs) are two rooflines that run one after the other, so `seconds` is the sum of
+/// their bounding times plus overhead and communication. `compute_s` and `memory_s` sum the two
+/// parts; when both parts share a bound, `seconds` is the larger of them plus overhead and
+/// communication.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Phase {
     pub flops: f64,
@@ -60,37 +71,46 @@ pub struct Phase {
     /// does not overlap its all-reduces with compute in the engines this model calibrates against.
     pub comm_s: f64,
     pub seconds: f64,
+    bound: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct Work {
+    flops: f64,
+    bytes: f64,
 }
 
 impl Phase {
     fn new(
-        flops: f64,
-        bytes: f64,
+        dense: Work,
+        attention: Work,
         flops_per_s: f64,
         bytes_per_s: f64,
         overhead_s: f64,
         comm_s: f64,
     ) -> Phase {
-        let compute_s = flops / flops_per_s;
-        let memory_s = bytes / bytes_per_s;
+        let parts = [dense, attention].map(|w| (w.flops / flops_per_s, w.bytes / bytes_per_s));
+        let on_compute: f64 = parts.iter().filter(|(c, m)| c >= m).map(|(c, _)| c).sum();
+        let on_memory: f64 = parts.iter().filter(|(c, m)| c < m).map(|(_, m)| m).sum();
         Phase {
-            flops,
-            bytes,
-            compute_s,
-            memory_s,
+            flops: dense.flops + attention.flops,
+            bytes: dense.bytes + attention.bytes,
+            compute_s: parts.iter().map(|(c, _)| c).sum(),
+            memory_s: parts.iter().map(|(_, m)| m).sum(),
             overhead_s,
             comm_s,
-            seconds: compute_s.max(memory_s) + overhead_s + comm_s,
+            seconds: on_compute + on_memory + overhead_s + comm_s,
+            bound: if on_compute >= on_memory {
+                "compute"
+            } else {
+                "memory"
+            },
         }
     }
 
-    /// Which resource bounds the phase.
+    /// Which resource the larger share of the phase's critical path waits on.
     pub fn bound(&self) -> &'static str {
-        if self.compute_s >= self.memory_s {
-            "compute"
-        } else {
-            "memory"
-        }
+        self.bound
     }
 }
 
@@ -103,6 +123,8 @@ pub enum CostError {
     },
     #[error("device '{device}' at tp = {tp} needs a link for the tensor-parallel all-reduces")]
     NoLink { device: String, tp: u32 },
+    #[error("one sequence needs {need_bytes:.3e} KV bytes but the budget is {budget_bytes:.3e}")]
+    KvBudgetTooSmall { need_bytes: f64, budget_bytes: f64 },
 }
 
 fn device_flops_per_s(device: &Device, precision: Precision) -> Result<f64, CostError> {
@@ -158,21 +180,38 @@ pub fn prefill(
     new_tokens: u64,
     cached_prefix: u64,
 ) -> Result<Phase, CostError> {
+    prefill_batch(model, target, 1, new_tokens, cached_prefix)
+}
+
+/// Cost of prefilling `sequences` independent sequences of `new_tokens` each behind
+/// `cached_prefix` resident tokens.
+pub fn prefill_batch(
+    model: &ModelSpec,
+    target: &Target<'_>,
+    sequences: u64,
+    new_tokens: u64,
+    cached_prefix: u64,
+) -> Result<Phase, CostError> {
     let (device, eff) = (target.device, &target.eff);
     let tp = f64::from(target.tp.max(1));
     let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_prefill;
     let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
+    let seqs = sequences as f64;
     let n = new_tokens as f64;
-    let linear_flops = 2.0 * model.active_params_per_token() as f64 * n;
-    let flops = linear_flops + attention_flops(model, new_tokens, cached_prefix);
-    let bytes = model.weight_bytes() as f64
-        + kv_bytes(model, cached_prefix) as f64
-        + model.kv_bytes_per_token() as f64 * n;
+    let dense = Work {
+        flops: seqs * 2.0 * model.active_params_per_token() as f64 * n,
+        bytes: model.weight_bytes() as f64,
+    };
+    let attention = Work {
+        flops: seqs * attention_flops(model, new_tokens, cached_prefix),
+        bytes: seqs
+            * (kv_bytes(model, cached_prefix) as f64 + model.kv_bytes_per_token() as f64 * n),
+    };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
-    let comm = all_reduce_seconds(model, target, n)?;
+    let comm = all_reduce_seconds(model, target, seqs * n)?;
     Ok(Phase::new(
-        flops,
-        bytes,
+        dense,
+        attention,
         flops_per_s,
         bytes_per_s,
         overhead,
@@ -192,20 +231,72 @@ pub fn decode_step(
     let batch = batch.max(1) as f64;
     let flops_per_s = device_flops_per_s(device, model.weight_precision)? * tp * eff.mfu_decode;
     let bytes_per_s = device.memory_bw_bytes_per_s() * tp * eff.bw_util;
-    let per_seq_flops =
-        2.0 * model.active_params_per_token() as f64 + attention_flops(model, 1, context_tokens);
-    let flops = per_seq_flops * batch;
-    let bytes = model.weight_bytes() as f64 + batch * kv_bytes(model, context_tokens) as f64;
+    let dense = Work {
+        flops: batch * 2.0 * model.active_params_per_token() as f64,
+        bytes: model.weight_bytes() as f64,
+    };
+    let attention = Work {
+        flops: batch * attention_flops(model, 1, context_tokens),
+        bytes: batch * kv_bytes(model, context_tokens) as f64,
+    };
     let overhead = eff.per_layer_overhead_s * f64::from(model.n_layers);
     let comm = all_reduce_seconds(model, target, batch)?;
     Ok(Phase::new(
-        flops,
-        bytes,
+        dense,
+        attention,
         flops_per_s,
         bytes_per_s,
         overhead,
         comm,
     ))
+}
+
+/// Offline throughput for one request shape at the throughput-optimal batch: every request has
+/// `isl` input and `osl` output tokens, the batch is prefilled together and then decodes `osl`
+/// steps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SteadyState {
+    pub batch: u64,
+    pub prefill_s: f64,
+    pub decode_s: f64,
+    pub output_tokens_per_s: f64,
+    /// `"compute"` or `"memory"`, from the decode phase.
+    pub bound: &'static str,
+}
+
+/// The [`SteadyState`] with the highest output rate over batches of 1 to `max_batch` whose KV for
+/// `isl + osl` tokens each fits in `kv_budget_bytes`. Decode runs at the midpoint context
+/// `isl + osl / 2`: KV reads and attention FLOPs are linear in context, so the midpoint gives the
+/// exact sum over the `osl` steps.
+pub fn max_throughput(
+    model: &ModelSpec,
+    target: &Target<'_>,
+    isl: u64,
+    osl: u64,
+    kv_budget_bytes: f64,
+    max_batch: u64,
+) -> Result<SteadyState, CostError> {
+    let per_sequence = kv_bytes(model, isl + osl) as f64;
+    let mut best: Option<SteadyState> = None;
+    for batch in (1..=max_batch).take_while(|&b| b as f64 * per_sequence <= kv_budget_bytes) {
+        let prefill_s = prefill_batch(model, target, batch, isl, 0)?.seconds;
+        let step = decode_step(model, target, isl + osl / 2, batch)?;
+        let decode_s = osl as f64 * step.seconds;
+        let output_tokens_per_s = (batch * osl) as f64 / (prefill_s + decode_s);
+        if best.is_none_or(|b| output_tokens_per_s > b.output_tokens_per_s) {
+            best = Some(SteadyState {
+                batch,
+                prefill_s,
+                decode_s,
+                output_tokens_per_s,
+                bound: step.bound(),
+            });
+        }
+    }
+    best.ok_or(CostError::KvBudgetTooSmall {
+        need_bytes: per_sequence,
+        budget_bytes: kv_budget_bytes,
+    })
 }
 
 /// Time to move `bytes` over a channel of `bw_gbps` GB/s with `latency_us` of latency.
@@ -312,6 +403,40 @@ mod tests {
         let mut swa = model.clone();
         swa.attention = agentforge_ir::AttentionKind::SlidingWindow { window: 128 };
         assert_eq!(kv_bytes(&swa, 119_000), 128 * 327_680);
+    }
+
+    #[test]
+    fn batched_prefill_attends_within_each_sequence() {
+        let model = ModelSpec::preset("llama-3.1-70b").unwrap();
+        let m = h200();
+        let t = on_nvlink(&m, 2);
+        let one = prefill(&model, &t, 4096, 0).unwrap();
+        assert_eq!(one, prefill_batch(&model, &t, 1, 4096, 0).unwrap());
+        let batch = prefill_batch(&model, &t, 8, 4096, 0).unwrap();
+        let joined = prefill(&model, &t, 8 * 4096, 0).unwrap();
+        assert!((batch.flops - 8.0 * one.flops).abs() < 1e-9 * batch.flops);
+        assert!(batch.flops < joined.flops);
+        assert!(batch.bytes < 8.0 * one.bytes);
+        assert_eq!(batch.comm_s, joined.comm_s);
+    }
+
+    #[test]
+    fn max_throughput_fills_the_kv_budget_up_to_the_batch_cap() {
+        let model = ModelSpec::preset("llama-3.1-70b").unwrap();
+        let m = h200();
+        let t = on_nvlink(&m, 2);
+        let per_sequence = kv_bytes(&model, 128 + 2048) as f64;
+        let ten = max_throughput(&model, &t, 128, 2048, 10.5 * per_sequence, 4096).unwrap();
+        assert_eq!(ten.batch, 10);
+        let capped = max_throughput(&model, &t, 128, 2048, 1e15, 64).unwrap();
+        assert_eq!(capped.batch, 64);
+        assert!(capped.output_tokens_per_s > ten.output_tokens_per_s);
+        let expected = (64 * 2048) as f64 / (capped.prefill_s + capped.decode_s);
+        assert!((capped.output_tokens_per_s - expected).abs() < 1e-9 * expected);
+        assert!(matches!(
+            max_throughput(&model, &t, 128, 2048, 0.5 * per_sequence, 4096),
+            Err(CostError::KvBudgetTooSmall { .. })
+        ));
     }
 
     #[test]

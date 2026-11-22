@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use agentforge_compile::{
     kv_liveness, place, plan_residency, DeviceState, ResidencyAction, TierBudget,
 };
+use agentforge_cost::calibration::{self, Calibration};
 use agentforge_cost::{self as cost, Efficiency, Phase};
 use agentforge_ir::{AgentProgram, LatencyModel, ModelSpec, Precision};
 use agentforge_machine::Machine;
@@ -117,6 +118,20 @@ enum CostCommand {
         context: u64,
         #[arg(long, default_value_t = 1)]
         batch: u64,
+    },
+    /// Compare predicted offline throughput with the bundled TensorRT-LLM measurements.
+    Calibrate {
+        /// Largest batch the sweep tries; 2048 is trtllm-bench's default maximum batch size.
+        #[arg(long, default_value_t = 2048)]
+        max_batch: u64,
+        /// Fraction of device memory kept out of the KV budget; 0.10 matches TensorRT-LLM's
+        /// default free-memory fraction of 0.9.
+        #[arg(long, default_value_t = 0.10)]
+        reserve: f64,
+        /// Grid-search the efficiency knobs for the smallest worst-row error instead of
+        /// printing the table for the defaults.
+        #[arg(long)]
+        fit: bool,
     },
 }
 
@@ -405,7 +420,54 @@ fn cost_cmd(command: CostCommand) -> Result<()> {
             );
             Ok(())
         }
+        CostCommand::Calibrate {
+            max_batch,
+            reserve,
+            fit,
+        } => calibrate(max_batch, reserve, fit),
     }
+}
+
+fn calibrate(max_batch: u64, reserve: f64, fit: bool) -> Result<()> {
+    let cal = Calibration::builtin();
+    if fit {
+        let (eff, max_error) = calibration::fit(&cal, reserve, max_batch)?;
+        let results = cal.evaluate(&eff, reserve, max_batch)?;
+        println!("{eff:#?}");
+        println!("max |error|      {:.1}%", 100.0 * max_error);
+        println!(
+            "geomean |error|  {:.1}%",
+            100.0 * calibration::geomean_abs_error(&results)
+        );
+        return Ok(());
+    }
+    let results = cal.evaluate(&Efficiency::default(), reserve, max_batch)?;
+    println!("{} ({})", cal.name, cal.metric);
+    println!();
+    println!("| machine | weights | tp | isl | osl | published tok/s | predicted tok/s | batch | bound | error |");
+    println!("|---|---|---:|---:|---:|---:|---:|---:|---|---:|");
+    for r in &results {
+        println!(
+            "| {} | {} | {} | {} | {} | {:.0} | {:.0} | {} | {} | {:+.1}% |",
+            r.row.machine,
+            r.row.weight_precision,
+            r.row.tp,
+            r.row.isl,
+            r.row.osl,
+            r.row.tokens_per_s,
+            r.predicted.output_tokens_per_s,
+            r.predicted.batch,
+            r.predicted.bound,
+            100.0 * r.error
+        );
+    }
+    println!();
+    println!(
+        "max |error| {:.1}%, geomean |error| {:.1}%",
+        100.0 * calibration::max_abs_error(&results),
+        100.0 * calibration::geomean_abs_error(&results)
+    );
+    Ok(())
 }
 
 fn plan_cmd(command: PlanCommand) -> Result<()> {
